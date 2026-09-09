@@ -1,0 +1,218 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <SPI.h>
+#include <RadioLib.h>
+#include <Preferences.h>
+#include <WiFiClientSecure.h>
+#include <WiFiClient.h>
+#include <ArduinoJson.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include "esp_wifi.h"
+
+#define HUB_SCK             22  
+#define HUB_MISO            21  
+#define HUB_MOSI            23  
+#define HUB_CS              5   
+#define HUB_DIO1            6   
+#define HUB_RESET           20  
+
+// --- BLE Universal Hub Provisioning Channels ---
+#define SERVICE_UUID   "a84f0001-5231-4b53-9a33-2154c0000000"
+#define CHAR_SSID_UUID "a84f0002-5231-4b53-9a33-2154c0000000"
+#define CHAR_PASS_UUID "a84f0003-5231-4b53-9a33-2154c0000000"
+#define CHAR_TYPE_UUID "a84f0004-5231-4b53-9a33-2154c0000000" // 1=Google Sheets, 2=HA
+#define CHAR_DATA_UUID "a84f0005-5231-4b53-9a33-2154c0000000" // Script ID / Webhook URL
+#define CHAR_TOKN_UUID "a84f0006-5231-4b53-9a33-2154c0000000" // Access Token
+
+SX1262 radio = new Module(HUB_CS, HUB_DIO1, HUB_RESET);
+Preferences storage;
+
+String wifiSsid = ""; String wifiPass = ""; String apiEndpoint = ""; String secretToken = "";
+int platformType = 1;
+
+unsigned long lastRecvTimeMs = 0;
+bool wifiActive = false;
+bool freshConfigLoaded = false;
+bool bleConnected = false;
+
+struct __attribute__((__packed__)) BinaryTelemetryPacket {
+  uint8_t nodeIdentifier;
+  uint8_t arbitraryPayloadDataBytes[15]; // Captured dynamically as raw encrypted blocks
+};
+BinaryTelemetryPacket bufferPacket;
+
+class HubServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) { bleConnected = true; }
+    void onDisconnect(BLEServer* pServer) { bleConnected = false; }
+};
+
+class HubCaptureCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pChar) {
+        String val = String(pChar->getValue().c_str());
+        std::string uuid = pChar->getUUID().toString();
+        storage.begin("hubconfig", false);
+        if (uuid == CHAR_SSID_UUID) storage.putString("ssid", val);
+        if (uuid == CHAR_PASS_UUID) storage.putString("pass", val);
+        if (uuid == CHAR_TYPE_UUID) storage.putInt("platformType", val.toInt());
+        if (uuid == CHAR_DATA_UUID) storage.putString("endpointData", val);
+        if (uuid == CHAR_TOKN_UUID) {
+            storage.putString("token", val);
+            freshConfigLoaded = true;
+        }
+        storage.end();
+    }
+};
+
+uint32_t executeCloudTransaction(uint8_t* rawBytes, uint8_t senderId, float rssi, float snr);
+void shutDownWiFi();
+
+void setup() {
+  Serial.begin(115200);
+  
+  WiFi.disconnect(true); WiFi.mode(WIFI_OFF); esp_wifi_stop();
+
+  storage.begin("hubconfig", true);
+  wifiSsid     = storage.getString("ssid", "OFFLINE_DEFAULT");
+  wifiPass     = storage.getString("pass", "NO_PASS");
+  platformType = storage.getInt("platformType", 1);
+  apiEndpoint  = storage.getString("endpointData", "EMPTY");
+  secretToken  = storage.getString("token", "NONE");
+  storage.end();
+
+  if (esp_reset_reason() == ESP_RST_POWERON || wifiSsid == "OFFLINE_DEFAULT") {
+      BLEDevice::init("ECOSYNC_GATEWAY_HUB");
+      BLEServer *pServer = BLEDevice::createServer();
+      pServer->setCallbacks(new HubServerCallbacks());
+      BLEService *pService = pServer->createService(SERVICE_UUID);
+      
+      BLECharacteristic *cS  = pService->createCharacteristic(CHAR_SSID_UUID, BLECharacteristic::PROPERTY_WRITE);
+      BLECharacteristic *cP  = pService->createCharacteristic(CHAR_PASS_UUID, BLECharacteristic::PROPERTY_WRITE);
+      BLECharacteristic *cTy = pService->createCharacteristic(CHAR_TYPE_UUID, BLECharacteristic::PROPERTY_WRITE);
+      BLECharacteristic *cD  = pService->createCharacteristic(CHAR_DATA_UUID, BLECharacteristic::PROPERTY_WRITE);
+      BLECharacteristic *cTo = pService->createCharacteristic(CHAR_TOKN_UUID, BLECharacteristic::PROPERTY_WRITE);
+
+      HubCaptureCallbacks* cb = new HubCaptureCallbacks();
+      cS->setCallbacks(cb); cP->setCallbacks(cb); cTy->setCallbacks(cb); cD->setCallbacks(cb); cTo->setCallbacks(cb);
+
+      pService->start();
+      BLEDevice::getAdvertising()->addServiceUUID(SERVICE_UUID);
+      BLEDevice::getAdvertising()->start();
+      
+      unsigned long bleTimer = millis();
+      while (millis() - bleTimer < 30000) {
+          if (freshConfigLoaded) { delay(1000); ESP.restart(); }
+          if (bleConnected) timerTimer = millis();
+          delay(100);
+      }
+      BLEDevice::deinit(true);
+  }
+
+  SPI.begin(HUB_SCK, HUB_MISO, HUB_MOSI, HUB_CS);
+  radio.begin(915.0, 125.0, 7, 5);
+  radio.startReceive();
+}
+
+void loop() {
+  if (radio.isPacketReceived()) {
+    if (radio.getPacketLength() == 16) {
+      radio.readData((uint8_t*)&bufferPacket, 16);
+      lastRecvTimeMs = millis();
+      
+      // Step 1: Forward the encrypted package directly to user endpoints & read target sleep settings
+      uint32_t nextSleepSeconds = executeCloudTransaction((uint8_t*)&bufferPacket, bufferPacket.nodeIdentifier, radio.getRSSI(), radio.getSNR());
+
+      // Step 2: Build Big-Endian Bidirectional ACK Token
+      uint8_t ack[5];
+      ack[0] = 0xAC;
+      ack[1] = (nextSleepSeconds >> 24) & 0xFF;
+      ack[2] = (nextSleepSeconds >> 16) & 0xFF;
+      ack[3] = (nextSleepSeconds >> 8)  & 0xFF;
+      ack[4] = nextSleepSeconds         & 0xFF;
+
+      radio.transmit(ack, 5);
+      radio.startReceive();
+    } else {
+      radio.startReceive();
+    }
+  }
+
+  if (wifiActive && (millis() - lastRecvTimeMs >= 15000)) {
+      shutDownWiFi();
+  }
+}
+
+// Universal Base64 text translation generator
+String base64Encode(uint8_t* data, size_t inputLength) {
+  static const char base64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  String result = ""; result.reserve(((inputLength + 2) / 3) * 4);
+  for (size_t i = 0; i < inputLength; i += 3) {
+    uint32_t b = (data[i] << 16) | ((i + 1 < inputLength ? data[i + 1] : 0) << 8) | (i + 2 < inputLength ? data[i + 2] : 0);
+    result += base64Chars[(b >> 18) & 0x3F]; result += base64Chars[(b >> 12) & 0x3F];
+    result += (i + 1 < inputLength) ? base64Chars[(b >> 6) & 0x3F] : '=';
+    result += (i + 2 < inputLength) ? base64Chars[b & 0x3F] : '=';
+  }
+  return result;
+}
+
+uint32_t executeCloudTransaction(uint8_t* rawBytes, uint8_t senderId, float rssi, float snr) {
+  uint32_t targetSleepSec = 300; // Fallback sync tracking threshold configuration default
+
+  if (!wifiActive) {
+    esp_wifi_start(); WiFi.mode(WIFI_STA); WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+    int timeout = 0; while (WiFi.status() != WL_CONNECTED && timeout < 30) { delay(200); timeout++; }
+    if (WiFi.status() == WL_CONNECTED) { wifiActive = true; } else { shutDownWiFi(); return targetSleepSec; }
+  }
+
+  String base64Data = base64Encode(rawBytes, 16);
+  String json = "{\"nodeId\":" + String(senderId) + ",\"encryptedData\":\"" + base64Data + "\",\"rssi\":" + String(rssi,1) + ",\"snr\":" + String(snr,1) + "}";
+
+  if (platformType == 1) { // HTTPS Google Client Stream
+    WiFiClientSecure client; client.setInsecure();
+    if (client.connect("script.google.com", 443)) {
+      String authJson = "{\"secretToken\":\"" + secretToken + "\"," + json.substring(1);
+      String path = "/macros/s/" + apiEndpoint + "/exec";
+      client.println("POST " + path + " HTTP/1.1");
+      client.println("Host: script.google.com");
+      client.println("Content-Type: application/json");
+      client.println("Connection: close");
+      client.print("Content-Length: "); client.println(authJson.length());
+      client.println(); client.println(authJson);
+      
+      unsigned long timer = millis();
+      while (client.available() == 0) { if (millis() - timer > 6000) { client.stop(); return targetSleepSec; } }
+      String resp = ""; while (client.available()) { resp += (char)client.read(); } client.stop();
+      int start = resp.indexOf("{");
+      if (start != -1) {
+        StaticJsonDocument<200> doc; deserializeJson(doc, resp.substring(start));
+        if (doc.containsKey("interval")) targetSleepSec = doc["interval"].as<uint32_t>();
+      }
+    }
+  } else { // Direct Fast Local HTTP Home Assistant Webhook call execution
+    WiFiClient client;
+    int slash = apiEndpoint.indexOf("//");
+    String url = (slash != -1) ? apiEndpoint.substring(slash + 2) : apiEndpoint;
+    int pathIdx = url.indexOf("/");
+    String host = url.substring(0, pathIdx); String path = url.substring(pathIdx);
+    String ip = host; int port = 8123;
+    int colon = host.indexOf(":");
+    if (colon != -1) { ip = host.substring(0, colon); port = host.substring(colon + 1).toInt(); }
+    
+    if (client.connect(ip.c_str(), port)) {
+      client.println("POST " + path + " HTTP/1.1");
+      client.println("Host: " + ip);
+      client.println("Content-Type: application/json");
+      client.println("Connection: close");
+      client.print("Content-Length: "); client.println(json.length());
+      client.println(); client.println(json);
+      unsigned long timer = millis(); while (client.available() == 0) { if (millis() - timer > 3000) { client.stop(); return targetSleepSec; } }
+      client.stop();
+    }
+  }
+  return targetSleepSec;
+}
+
+void shutDownWiFi() {
+  WiFi.disconnect(true); WiFi.mode(WIFI_OFF); esp_wifi_stop(); wifiActive = false;
+}
