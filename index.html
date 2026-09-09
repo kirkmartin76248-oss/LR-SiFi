@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>EcoSYNC Hardware Fleet Configurator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: -apple-system, sans-serif; max-width: 550px; margin: 20px auto; padding: 15px; background: #f4f6f9; }
+        .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); margin-bottom: 15px; }
+        h2 { color: #1e3a8a; margin-top: 0; border-bottom: 2px solid #e5e7eb; padding-bottom: 8px; }
+        label { display: block; margin-top: 12px; font-weight: 600; color: #374151; }
+        input, select { width: 100%; padding: 12px; margin-top: 6px; box-sizing: border-box; border: 1px solid #d1d5db; border-radius: 6px; font-size: 15px; }
+        button { background: #2563eb; color: white; border: none; padding: 14px; margin-top: 20px; width: 100%; border-radius: 6px; font-size: 16px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #1d4ed8; }
+        .hidden { display: none; }
+        .hint { color: #6b7280; font-size: 12px; margin-top: 4px; }
+        .nav-tabs { display: flex; margin-bottom: 15px; }
+        .tab { flex: 1; text-align: center; padding: 10px; background: #e5e7eb; cursor: pointer; font-weight: bold; border-radius: 6px; margin: 0 4px; }
+        .active-tab { background: #2563eb; color: white; }
+    </style>
+</head>
+<body>
+    <div class="nav-tabs">
+        <div id="tabHub" class="tab active-tab" onclick="switchMode('HUB')">Gateway Hub Mode</div>
+        <div id="tabNode" class="tab" onclick="switchMode('NODE')">Sensor Node Mode</div>
+    </div>
+
+    <!-- GATEWAY HUB CONFIGURATION UNIT PANEL -->
+    <div id="panelHub" class="card">
+        <h2>Provision Central Gateway Hub</h2>
+        <label>Wi-Fi Access Point Name (SSID):</label>
+        <input type="text" id="hubSsid" placeholder="e.g., Office_Network">
+        <label>Wi-Fi Passphrase:</label>
+        <input type="password" id="hubPass" placeholder="••••••••">
+        
+        <label>Integration Destination Platform:</label>
+        <select id="platformChoice" onchange="togglePlatformFields()">
+            <option value="1">Google Sheets Connected Database</option>
+            <option value="2">Home Assistant (Local Webhook Url)</option>
+        </select>
+
+        <div id="rowGoogle">
+            <label>Google Script Deployment URL ID:</label>
+            <input type="text" id="hubScriptId" placeholder="AKfycby...">
+            <label>Google Shared Security Token:</label>
+            <input type="text" id="hubToken" value="EcoSyncFieldAccessKey2026">
+        </div>
+        <div id="rowHA" class="hidden">
+            <label>Home Assistant Webhook Destination URL:</label>
+            <input type="text" id="hubHaUrl" placeholder="http://192.168.1">
+        </div>
+        <button onclick="writeHubConfiguration()">Flash Gateway Hub Config</button>
+    </div>
+
+    <!-- REMOTE FIELD SENSOR UNIT PANEL -->
+    <div id="panelNode" class="card hidden">
+        <h2>Provision Field Sensor Unit</h2>
+        <label>Assign Unique Hardware Node ID:</label>
+        <input type="number" id="nodeId" min="1" max="255" value="1">
+        <label>Default Sleep Interval (Seconds):</label>
+        <input type="number" id="nodeSleep" value="300">
+        
+        <label>Private AES-128 Encryption Passphrase:</label>
+        <input type="text" id="nodeKey" maxlength="16" placeholder="Must be exactly 16 characters">
+        <div class="hint">Must match the entry value assigned inside your master database configuration row.</div>
+        <button onclick="writeNodeConfiguration()" style="background:#d97706;">Flash Field Node Config</button>
+    </div>
+
+    <script>
+        let currentMode = 'HUB';
+        function switchMode(m) {
+            currentMode = m;
+            if(m === 'HUB') {
+                document.getElementById('panelHub').classList.remove('hidden'); document.getElementById('panelNode').classList.add('hidden');
+                document.getElementById('tabHub').classList.add('active-tab'); document.getElementById('tabNode').classList.remove('active-tab');
+            } else {
+                document.getElementById('panelHub').classList.add('hidden'); document.getElementById('panelNode').classList.remove('hidden');
+                document.getElementById('tabHub').classList.remove('active-tab'); document.getElementById('tabNode').classList.add('active-tab');
+            }
+        }
+        function togglePlatformFields() {
+            if(document.getElementById('platformChoice').value === "1") {
+                document.getElementById('rowGoogle').classList.remove('hidden'); document.getElementById('rowHA').classList.add('hidden');
+            } else {
+                document.getElementById('rowGoogle').classList.add('hidden'); document.getElementById('rowHA').classList.remove('hidden');
+            }
+        }
+        async function writeHubConfiguration() {
+            const uuidS = "a84f0001-5231-4b53-9a33-2154c0000000";
+            try {
+                const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [uuidS] }] });
+                const gatt = await dev.gatt.connect(); const svc = await gatt.getPrimaryService(uuidS); const enc = new TextEncoder();
+                await (await svc.getCharacteristic("a84f0002-5231-4b53-9a33-2154c0000000")).writeValue(enc.encode(document.getElementById('hubSsid').value));
+                await (await svc.getCharacteristic("a84f0003-5231-4b53-9a33-2154c0000000")).writeValue(enc.encode(document.getElementById('hubPass').value));
+                const type = document.getElementById('platformChoice').value;
+                await (await svc.getCharacteristic("a84f0004-5231-4b53-9a33-2154c0000000")).writeValue(enc.encode(type));
+                const data = (type === "1") ? document.getElementById('hubScriptId').value : document.getElementById('hubHaUrl').value;
+                const tokn = (type === "1") ? document.getElementById('hubToken').value : "HA_BYPASS";
+                await (await svc.getCharacteristic("a84f0005-5231-4b53-9a33-2154c0000000")).writeValue(enc.encode(data));
+                await (await svc.getCharacteristic("a84f0006-5231-4b53-9a33-2154c0000000")).writeValue(enc.encode(tokn));
+                alert("Gateway Configured Successfully."); await gatt.disconnect();
+            } catch(e) { alert("BLE Error: " + e.message); }
+        }
+        async function writeNodeConfiguration() {
+            if(document.getElementById('nodeKey').value.length !== 16) { alert("Key must be exactly 16 characters long."); return; }
+            const uuidN = "4fa15562-812d-4d40-8d38-92212354c001";
+            try {
+                const dev = await navigator.bluetooth.requestDevice({ filters: [{ services: [uuidN] }] });
+                const gatt = await dev.gatt.connect(); const svc = await gatt.getPrimaryService(uuidN); const enc = new TextEncoder();
+                await (await svc.getCharacteristic("4fa15562-812d-4d40-8d38-92212354c002")).writeValue(enc.encode(document.getElementById('nodeId').value));
+                await (await svc.getCharacteristic("4fa15562-812d-4d40-8d38-92212354c003")).writeValue(enc.encode(document.getElementById('nodeSleep').value));
+                await (await svc.getCharacteristic("4fa15562-812d-4d40-8d38-92212354c004")).writeValue(enc.encode(document.getElementById('nodeKey').value));
+                alert("Sensor Node Configured Successfully."); await gatt.disconnect();
+            } catch(e) { alert("BLE Error: " + e.message); }
+        }
+    </script>
+</body>
+</html>
