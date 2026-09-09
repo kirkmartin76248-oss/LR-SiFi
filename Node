@@ -1,0 +1,194 @@
+#include <Arduino.h>
+#include <SPI.h>
+#include <RadioLib.h>
+#include <Preferences.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include "mbedtls/aes.h"
+#include "esp_wifi.h"
+#include "esp_bt.h"
+
+// --- Pin Allocations (FireBeetle C6 / Wio-SX1262 Matrix) ---
+#define P_MOSFET_GATE       19  
+#define SENSOR_1_ADC        4   
+#define SENSOR_2_ADC        7   
+#define SENSOR_3_ADC        17  
+#define SENSOR_4_ADC        16  
+
+#define LORA_SCK            22  
+#define LORA_MISO           21  
+#define LORA_MOSI           23  
+#define LORA_CS             5   
+#define LORA_DIO1           6   
+#define LORA_RESET          20  
+
+SX1262 radio = new Module(LORA_CS, LORA_DIO1, LORA_RESET);
+Preferences storage;
+
+// --- Runtime Variables (Loaded from Flash) ---
+RTC_DATA_ATTR uint16_t frameCounter = 0; 
+uint8_t  nodeId            = 1;    
+uint32_t sleepIntervalSec  = 300;  
+String   encryptionKey     = "EcoSyncDefault99"; // Fallback placeholder
+
+// --- BLE Profile IDs ---
+#define SERVICE_UUID "4fa15562-812d-4d40-8d38-92212354c001"
+#define CHAR_ID_UUID "4fa15562-812d-4d40-8d38-92212354c002"
+#define CHAR_SLP_UUID "4fa15562-812d-4d40-8d38-92212354c003"
+#define CHAR_KEY_UUID "4fa15562-812d-4d40-8d38-92212354c004"
+
+bool bleConnected = false;
+bool configReceived = false;
+
+struct __attribute__((__packed__)) BinaryTelemetryPacket {
+  uint8_t  nodeIdentifier;
+  uint16_t frameSequenceNumber; 
+  uint16_t millivoltsA0; 
+  uint16_t millivoltsA1;
+  uint16_t millivoltsRX;
+  uint16_t millivoltsTX;
+  uint8_t  padding[5]; // Forces block alignment to exactly 16 bytes for AES-128
+};
+
+class NodeServerCallbacks: public BLEServerCallbacks {
+    void onConnect(BLEServer* pServer) { bleConnected = true; }
+    void onDisconnect(BLEServer* pServer) { bleConnected = false; }
+};
+
+class NodeConfigCallbacks: public BLECharacteristicCallbacks {
+    void onWrite(BLECharacteristic *pChar) {
+        String val = String(pChar->getValue().c_str());
+        std::string uuid = pChar->getUUID().toString();
+        storage.begin("nodeconfig", false);
+        if (uuid == CHAR_ID_UUID)  storage.putUChar("nodeId", val.toInt());
+        if (uuid == CHAR_SLP_UUID) storage.putUInt("sleepSec", val.toInt());
+        if (uuid == CHAR_KEY_UUID) {
+            if(val.length() == 16) {
+                storage.putString("cryptoKey", val);
+                configReceived = true;
+            }
+        }
+        storage.end();
+    }
+};
+
+bool transmitWithCADAndACK(BinaryTelemetryPacket packet);
+
+void setup() {
+  unsigned long awakeStart = millis();
+  Serial.begin(115200);
+  
+  // Cut high-power antennas immediately to guard Li-SOCl2 reserves
+  esp_wifi_stop(); esp_bt_controller_disable();
+  
+  pinMode(P_MOSFET_GATE, OUTPUT);
+  digitalWrite(P_MOSFET_GATE, HIGH); // Isolate power rails during boot initialization
+
+  // Read non-volatile parameters
+  storage.begin("nodeconfig", true);
+  nodeId           = storage.getUChar("nodeId", nodeId);
+  sleepIntervalSec = storage.getUInt("sleepSec", sleepIntervalSec);
+  encryptionKey     = storage.getString("cryptoKey", encryptionKey);
+  storage.end();
+
+  // Trigger BLE Portal if hard-powered on or unassigned
+  if (esp_reset_reason() == ESP_RST_POWERON) {
+      BLEDevice::init("ECOSYNC_FIELD_NODE");
+      BLEServer *pServer = BLEDevice::createServer();
+      pServer->setCallbacks(new NodeServerCallbacks());
+      BLEService *pService = pServer->createService(SERVICE_UUID);
+      
+      BLECharacteristic *cId  = pService->createCharacteristic(CHAR_ID_UUID,  BLECharacteristic::PROPERTY_WRITE);
+      BLECharacteristic *cSlp = pService->createCharacteristic(CHAR_SLP_UUID, BLECharacteristic::PROPERTY_WRITE);
+      BLECharacteristic *cKey = pService->createCharacteristic(CHAR_KEY_UUID, BLECharacteristic::PROPERTY_WRITE);
+      
+      NodeConfigCallbacks* cb = new NodeConfigCallbacks();
+      cId->setCallbacks(cb); cSlp->setCallbacks(cb); cKey->setCallbacks(cb);
+      
+      pService->start();
+      BLEDevice::getAdvertising()->addServiceUUID(SERVICE_UUID);
+      BLEDevice::getAdvertising()->start();
+      
+      unsigned long bleWindow = millis();
+      while (millis() - bleWindow < 30000) {
+          if (configReceived) { delay(1000); ESP.restart(); }
+          if (bleConnected) { bleWindow = millis(); } // Hold window open while paired
+          delay(100);
+      }
+      BLEDevice::deinit(true);
+  }
+
+  frameCounter++;
+
+  // Engage P-MOSFET tracking lines
+  digitalWrite(P_MOSFET_GATE, LOW); 
+  delay(2000); // Let analog sensor stabilization complete
+
+  BinaryTelemetryPacket packet;
+  packet.nodeIdentifier      = nodeId;
+  packet.frameSequenceNumber = frameCounter;
+  packet.millivoltsA0         = analogReadMilliVolts(SENSOR_1_ADC);
+  packet.millivoltsA1         = analogReadMilliVolts(SENSOR_2_ADC);
+  packet.millivoltsRX         = analogReadMilliVolts(SENSOR_3_ADC);
+  packet.millivoltsTX         = analogReadMilliVolts(SENSOR_4_ADC);
+  memset(packet.padding, 0, 5);
+
+  digitalWrite(P_MOSFET_GATE, HIGH); // Sever sensor power lines immediately
+
+  SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_CS);
+  if (radio.begin(915.0, 125.0, 7, 5) == RADIOLIB_ERR_NONE) {
+      transmitWithCADAndACK(packet);
+  }
+
+  // Plunge microcontroller directly into deep sleep
+  unsigned long awakeTime = millis() - awakeStart;
+  unsigned long targetMs = sleepIntervalSec * 1000UL;
+  unsigned long sleepMs = (targetMs > awakeTime) ? (targetMs - awakeTime) : 1000UL;
+  
+  esp_sleep_enable_timer_wakeup((uint64_t)sleepMs * 1000ULL);
+  esp_deep_sleep_start();
+}
+
+void loop() {}
+
+bool transmitWithCADAndACK(BinaryTelemetryPacket packet) {
+  // Scramble raw telemetry data buffer using hardware AES-128 engine structures
+  mbedtls_aes_context aes;
+  mbedtls_aes_init(&aes);
+  mbedtls_aes_setkey_enc(&aes, (const unsigned char*)encryptionKey.c_str(), 128);
+  uint8_t encryptedBuffer[16];
+  mbedtls_aes_crypt_ecb(&aes, MBEDTLS_AES_ENCRYPT, (const unsigned char*)&packet, encryptedBuffer);
+  mbedtls_aes_free(&aes);
+
+  int maxRetries = 3;
+  for (int attempt = 1; attempt <= maxRetries; attempt++) {
+    // Channel Activity Detection (Clear-Air Verification)
+    int cad = radio.scanChannel();
+    int backoffs = 0;
+    while (cad == RADIOLIB_LORA_DETECTED && backoffs < 5) {
+      delay(random(20, 100)); // Exponential backoff timing delay spacing
+      cad = radio.scanChannel();
+      backoffs++;
+    }
+
+    radio.transmit(encryptedBuffer, 16);
+    
+    // Bidirectional Interval Check: Await 5-Byte Multi-ACK [HeaderToken(1B)][IntervalSeconds(4B)]
+    uint8_t ackBuffer[5] = {0}; 
+    if (radio.receive(ackBuffer, 5) == RADIOLIB_ERR_NONE && ackBuffer[0] == 0xAC) {
+      uint32_t cloudSleepSec = ((uint32_t)ackBuffer[1] << 24) | 
+                               ((uint32_t)ackBuffer[2] << 16) | 
+                               ((uint32_t)ackBuffer[3] << 8)  | 
+                                (uint32_t)ackBuffer[4];
+      if (cloudSleepSec >= 5) {
+        storage.begin("nodeconfig", false);
+        storage.putUInt("sleepSec", cloudSleepSec); // Sync field intervals down from database rows
+        storage.end();
+      }
+      return true; 
+    }
+    delay(random(100, 300));
+  }
+  return false; 
+}
