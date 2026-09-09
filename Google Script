@@ -1,0 +1,80 @@
+// =========================================================================
+//         ECOSYNC UNIVERSAL CENTRAL TELEMETRY CONTROLLER (V3 PRODUCTION)
+// =========================================================================
+
+// Ensure you paste the source text of CryptoJS library into a side script tab file inside your Apps Script editor panel setup!
+// Source: https://cloudflare.com
+
+function doGet(e) {
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(10000); } catch (err) { return ContentService.createTextOutput(JSON.stringify({"interval": 300})).setMimeType(ContentService.MimeType.JSON); }
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet(); var configSheet = ss.getSheetByName("Config"); var reqId = e.parameter.nodeId;
+    if (!configSheet || !reqId) return ContentService.createTextOutput(JSON.stringify({"interval": 300})).setMimeType(ContentService.MimeType.JSON);
+    var data = configSheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]) === String(reqId)) {
+        return ContentService.createTextOutput(JSON.stringify({"status": "success", "interval": Number(data[i][3])})).setMimeType(ContentService.MimeType.JSON); // Return Column D Sleep Interval
+      }
+    }
+    return ContentService.createTextOutput(JSON.stringify({"interval": 300})).setMimeType(ContentService.MimeType.JSON);
+  } finally { lock.releaseLock(); }
+}
+
+function doPost(e) {
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(10000); } catch (err) { return ContentService.createTextOutput(JSON.stringify({"status": "error", "message": "Lock timeout"})).setMimeType(ContentService.MimeType.JSON); }
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet(); var configSheet = ss.getSheetByName("Config");
+    var json = JSON.parse(e.postData.contents);
+    if (json.secretToken !== "EcoSyncFieldAccessKey2026") return ContentService.createTextOutput(JSON.stringify({"status": "error", "message": "Unauthorized"})).setMimeType(ContentService.MimeType.JSON);
+
+    var incomingId = String(json.nodeId); var b64Data = json.encryptedData; var configData = configSheet.getDataRange().getValues();
+    var nodeRow = null; for (var i = 1; i < configData.length; i++) { if (String(configData[i][0]) === incomingId) { nodeRow = configData[i]; break; } }
+    if (nodeRow === null) return ContentService.createTextOutput(JSON.stringify({"status": "error", "message": "Unmapped Node ID"})).setMimeType(ContentService.MimeType.JSON);
+
+    var locationTab = nodeRow[1]; var assetName = nodeRow[2]; var cipherKey = String(nodeRow[16]).trim(); // Column Q AES Key
+    
+    // Reverse ECB Block Decryption Structure
+    var parsedKey = CryptoJS.enc.Utf8.parse(cipherKey);
+    var decrypted = CryptoJS.AES.decrypt(b64Data, parsedKey, { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.NoPadding });
+    var hex = decrypted.toString(CryptoJS.enc.Hex);
+
+    // Unpack fields matching C++ struct blueprint mapping matrices
+    var decoded = {
+      frameId: parseInt(hex.substring(2, 6), 16),
+      s1: parseInt(hex.substring(6, 10), 16),
+      s2: parseInt(hex.substring(10, 14), 16),
+      s3: parseInt(hex.substring(14, 18), 16),
+      s4: parseInt(hex.substring(18, 22), 16)
+    };
+
+    var targetSheet = ss.getSheetByName(locationTab) || ss.insertSheet(locationTab);
+    if (targetSheet.getLastRow() === 0) {
+      targetSheet.appendRow(["Timestamp", "Node ID", "Asset Placement", "Frame Index #", "S1: "+nodeRow[4], "S2: "+nodeRow[7], "S3: "+nodeRow[10], "S4: "+nodeRow[13], "RSSI [dBm]", "SNR [dB]"]);
+      targetSheet.getRange("A1:J1").setFontWeight("bold").setBackground("#e9edf5");
+    }
+
+    targetSheet.appendRow([
+      new Date(), incomingId, assetName, decoded.frameId,
+      scaleV(decoded.s1, nodeRow[4], nodeRow[5], nodeRow[6]),
+      scaleV(decoded.s2, nodeRow[7], nodeRow[8], nodeRow[9]),
+      scaleV(decoded.s3, nodeRow[10], nodeRow[11], nodeRow[12]),
+      scaleV(decoded.s4, nodeRow[13], nodeRow[14], nodeRow[15]),
+      json.rssi, json.snr
+    ]);
+
+    // Query active sheets column state to pass back to the active gateway loop
+    return ContentService.createTextOutput(JSON.stringify({"status": "success", "interval": Number(nodeRow[3])})).setMimeType(ContentService.MimeType.JSON);
+  } catch(err) {
+    return ContentService.createTextOutput(JSON.stringify({"status": "error", "message": err.toString()})).setMimeType(ContentService.MimeType.JSON);
+  } finally { lock.releaseLock(); }
+}
+
+function scaleV(mV, type, min, max) {
+  if (String(type).toLowerCase() === "empty" || !type) return "-";
+  var val = Number(min) + ((mV / 3300.0) * (Number(max) - Number(min)));
+  if (String(type).toLowerCase().includes("level") || String(type).toLowerCase().includes("pressure")) return val.toFixed(2) + " in";
+  if (String(type).toLowerCase().includes("temp")) return val.toFixed(1) + " °F";
+  return val.toFixed(0) + " mV";
+}
