@@ -1,80 +1,254 @@
-// =========================================================================
-//         ECOSYNC UNIVERSAL CENTRAL TELEMETRY CONTROLLER (V3 PRODUCTION)
-// =========================================================================
-
-// Ensure you paste the source text of CryptoJS library into a side script tab file inside your Apps Script editor panel setup!
-// Source: https://cloudflare.com
-
-function doGet(e) {
-  var lock = LockService.getScriptLock();
-  try { lock.waitLock(10000); } catch (err) { return ContentService.createTextOutput(JSON.stringify({"interval": 300})).setMimeType(ContentService.MimeType.JSON); }
-  try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet(); var configSheet = ss.getSheetByName("Config"); var reqId = e.parameter.nodeId;
-    if (!configSheet || !reqId) return ContentService.createTextOutput(JSON.stringify({"interval": 300})).setMimeType(ContentService.MimeType.JSON);
-    var data = configSheet.getDataRange().getValues();
-    for (var i = 1; i < data.length; i++) {
-      if (String(data[i][0]) === String(reqId)) {
-        return ContentService.createTextOutput(JSON.stringify({"status": "success", "interval": Number(data[i][3])})).setMimeType(ContentService.MimeType.JSON); // Return Column D Sleep Interval
-      }
-    }
-    return ContentService.createTextOutput(JSON.stringify({"interval": 300})).setMimeType(ContentService.MimeType.JSON);
-  } finally { lock.releaseLock(); }
-}
+// =======================================================================================
+//   ECOSYNC ENGINE: CHUNK 1 - MAIN WEB ROUTER
+// =======================================================================================
 
 function doPost(e) {
   var lock = LockService.getScriptLock();
-  try { lock.waitLock(10000); } catch (err) { return ContentService.createTextOutput(JSON.stringify({"status": "error", "message": "Lock timeout"})).setMimeType(ContentService.MimeType.JSON); }
+  try { 
+    lock.waitLock(12000); // Guard database rows against simultaneous packet write crashes
+  } catch(err) { 
+    return respondJson({"status":"error","message":"Database thread lock timeout"}); 
+  }
+  
   try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet(); var configSheet = ss.getSheetByName("Config");
-    var json = JSON.parse(e.postData.contents);
-    if (json.secretToken !== "EcoSyncFieldAccessKey2026") return ContentService.createTextOutput(JSON.stringify({"status": "error", "message": "Unauthorized"})).setMimeType(ContentService.MimeType.JSON);
-
-    var incomingId = String(json.nodeId); var b64Data = json.encryptedData; var configData = configSheet.getDataRange().getValues();
-    var nodeRow = null; for (var i = 1; i < configData.length; i++) { if (String(configData[i][0]) === incomingId) { nodeRow = configData[i]; break; } }
-    if (nodeRow === null) return ContentService.createTextOutput(JSON.stringify({"status": "error", "message": "Unmapped Node ID"})).setMimeType(ContentService.MimeType.JSON);
-
-    var locationTab = nodeRow[1]; var assetName = nodeRow[2]; var cipherKey = String(nodeRow[16]).trim(); // Column Q AES Key
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    verifyOrBuildMasterConfigTab(ss);
     
-    // Reverse ECB Block Decryption Structure
-    var parsedKey = CryptoJS.enc.Utf8.parse(cipherKey);
-    var decrypted = CryptoJS.AES.decrypt(b64Data, parsedKey, { mode: CryptoJS.mode.ECB, padding: CryptoJS.pad.NoPadding });
-    var hex = decrypted.toString(CryptoJS.enc.Hex);
+    var json = JSON.parse(e.postData.contents);
 
-    // Unpack fields matching C++ struct blueprint mapping matrices
-    var decoded = {
-      frameId: parseInt(hex.substring(2, 6), 16),
-      s1: parseInt(hex.substring(6, 10), 16),
-      s2: parseInt(hex.substring(10, 14), 16),
-      s3: parseInt(hex.substring(14, 18), 16),
-      s4: parseInt(hex.substring(18, 22), 16)
-    };
-
-    var targetSheet = ss.getSheetByName(locationTab) || ss.insertSheet(locationTab);
-    if (targetSheet.getLastRow() === 0) {
-      targetSheet.appendRow(["Timestamp", "Node ID", "Asset Placement", "Frame Index #", "S1: "+nodeRow[4], "S2: "+nodeRow[7], "S3: "+nodeRow[10], "S4: "+nodeRow[13], "RSSI [dBm]", "SNR [dB]"]);
-      targetSheet.getRange("A1:J1").setFontWeight("bold").setBackground("#e9edf5");
+    // Latch Check: Stop malicious or wrong internet postings immediately
+    if (json.secretToken !== "EcoSyncFieldAccessKey2026") {
+      return respondJson({"status":"error","message":"Unauthorized access token"});
     }
 
-    targetSheet.appendRow([
-      new Date(), incomingId, assetName, decoded.frameId,
-      scaleV(decoded.s1, nodeRow[4], nodeRow[5], nodeRow[6]),
-      scaleV(decoded.s2, nodeRow[7], nodeRow[8], nodeRow[9]),
-      scaleV(decoded.s3, nodeRow[10], nodeRow[11], nodeRow[12]),
-      scaleV(decoded.s4, nodeRow[13], nodeRow[14], nodeRow[15]),
-      json.rssi, json.snr
-    ]);
+    // Task Route A: Dynamic Auto-Registration from the technician's phone browser
+    if (json.action === "registerNode") {
+       var configSheet = ss.getSheetByName("Config");
+       upsertRowConfiguration(configSheet, json);
+       return respondJson({"status":"success","message":"Config row successfully mapped"});
+    }
 
-    // Query active sheets column state to pass back to the active gateway loop
-    return ContentService.createTextOutput(JSON.stringify({"status": "success", "interval": Number(nodeRow[3])})).setMimeType(ContentService.MimeType.JSON);
+    // Task Route B: Normal live telemetry handling from an active field hub
+    return processIncomingTelemetry(ss, json);
+
   } catch(err) {
-    return ContentService.createTextOutput(JSON.stringify({"status": "error", "message": err.toString()})).setMimeType(ContentService.MimeType.JSON);
-  } finally { lock.releaseLock(); }
+    return respondJson({"status":"error","message": err.toString()});
+  } finally { 
+    lock.releaseLock(); 
+  }
 }
 
-function scaleV(mV, type, min, max) {
-  if (String(type).toLowerCase() === "empty" || !type) return "-";
-  var val = Number(min) + ((mV / 3300.0) * (Number(max) - Number(min)));
-  if (String(type).toLowerCase().includes("level") || String(type).toLowerCase().includes("pressure")) return val.toFixed(2) + " in";
-  if (String(type).toLowerCase().includes("temp")) return val.toFixed(1) + " °F";
-  return val.toFixed(0) + " mV";
+// Quick helper function to keep network responses clean
+function respondJson(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+// =======================================================================================
+//   ECOSYNC ENGINE: CHUNK 2 - LIVE DATA MANAGER
+// =======================================================================================
+
+function processIncomingTelemetry(ss, json) {
+  var configSheet = ss.getSheetByName("Config");
+  var configData = configSheet.getDataRange().getValues();
+  var incomingId = String(json.nodeId);
+  
+  // Find which row matches this specific Node ID
+  var rowIndex = findNodeRowIndex(configData, incomingId);
+  if (rowIndex === -1) return respondJson({"status":"error","message":"Node ID unmapped in Config sheet"});
+
+  var rRow = configData[rowIndex];
+  var destTab = rRow[1]; var assetName = rRow[2]; var sleepSec = rRow[3];
+  var cipherKey = String(rRow[25]).trim(); var discordUrl = String(rRow[24]).trim();
+
+  // Decrypt the scrambled LoRa payload block using the customer's dynamic key
+  var hex = decryptPayloadWithUserKey(json.encryptedData, cipherKey);
+  var decoded = unpackBinaryHex(hex);
+
+  // Extract profiles, execute conversion equations, and run background alerting checks
+  var s1 = { type: rRow[4],  min: Number(rRow[5]),  max: Number(rRow[6]),  isFault: rRow[7],  colIdx: 8  };
+  var s2 = { type: rRow[9],  min: Number(rRow[10]), max: Number(rRow[11]), isFault: rRow[12], colIdx: 13 };
+  var s3 = { type: rRow[14], min: Number(rRow[15]), max: Number(rRow[16]), isFault: rRow[17], colIdx: 18 };
+  var s4 = { type: rRow[19], min: Number(rRow[20]), max: Number(rRow[21]), isFault: rRow[22], colIdx: 23 };
+
+  var v1 = convertMilliVoltsToPhysical(decoded.s1_mV, s1.type);
+  var v2 = convertMilliVoltsToPhysical(decoded.s2_mV, s2.type);
+  var v3 = convertMilliVoltsToPhysical(decoded.s3_mV, s3.type);
+  var v4 = convertMilliVoltsToPhysical(decoded.s4_mV, s4.type);
+
+  // Check alarm boundaries and execute Discord web postings if thresholds are breached
+  evaluateAlarmsAndAlert(s1, v1, assetName, incomingId, "Port 1", discordUrl, configSheet, rowIndex + 1);
+  evaluateAlarmsAndAlert(s2, v2, assetName, incomingId, "Port 2", discordUrl, configSheet, rowIndex + 1);
+  evaluateAlarmsAndAlert(s3, v3, assetName, incomingId, "Port 3", discordUrl, configSheet, rowIndex + 1);
+  evaluateAlarmsAndAlert(s4, v4, assetName, incomingId, "Port 4", discordUrl, configSheet, rowIndex + 1);
+
+  // Log clean data records to target location ledger tabs
+  logTelemetryToTab(ss, destTab, assetName, incomingId, decoded.frameId, [v1, v2, v3, v4], json.rssi, json.snr);
+
+  // Tell the gateway hub if the sleep interval has been modified on the sheets dashboard
+  return respondJson({"status":"success","interval": Number(sleepSec)});
+}
+
+function findNodeRowIndex(matrix, idStr) {
+  for (var i = 1; i < matrix.length; i++) {
+    if (String(matrix[i][0]) === idStr) return i;
+  }
+  return -1;
+}
+// =======================================================================================
+//   ECOSYNC ENGINE: CHUNK 3 - SENSOR MATH TRANSFORMS
+// =======================================================================================
+
+function convertMilliVoltsToPhysical(mV, type) {
+  if (!type || type === "Empty") return 0;
+  
+  switch(String(type).trim()) {
+    case "Temperature":
+      // Standard linear map formula: 0mV = -20°F, 3300mV = 140°F
+      var tempF = -20.0 + ((mV / 3300.0) * (140.0 - (-20.0)));
+      return Number(tempF.toFixed(1));
+      
+    case "Dissolved Oxygen":
+      // Standard galvanic sensor linear calibration: 0mV = 0 mg/L, 3300mV = 20 mg/L
+      var doMgL = 0.0 + ((mV / 3300.0) * 20.0);
+      return Number(doMgL.toFixed(2));
+      
+    case "Water Switch":
+    case "Air Switch":
+      // Digital logic check: Below 1500mV is reading open (0), above is closed (1)
+      return (mV > 1500) ? 1 : 0;
+      
+    default:
+      return mV; // Fallback to raw electrical values if type is unmapped
+  }
+}
+// =======================================================================================
+//   ECOSYNC ENGINE: CHUNK 4 - AES PAYLOAD UNPACKER
+// =======================================================================================
+
+function decryptPayloadWithUserKey(base64Data, cipherKey) {
+  var keyParsed = CryptoJS.enc.Utf8.parse(cipherKey);
+  var decrypted = CryptoJS.AES.decrypt(base64Data, keyParsed, {
+    mode: CryptoJS.mode.ECB,
+    padding: CryptoJS.pad.NoPadding
+  });
+  return decrypted.toString(CryptoJS.enc.Hex);
+}
+
+function unpackBinaryHex(hexStr) {
+  return {
+    frameId: parseInt(hexStr.substring(2, 6), 16),
+    s1_mV:   parseInt(hexStr.substring(6, 10), 16),
+    s2_mV:   parseInt(hexStr.substring(10, 14), 16),
+    s3_mV:   parseInt(hexStr.substring(14, 18), 16),
+    s4_mV:   parseInt(hexStr.substring(18, 22), 16)
+  };
+}
+// =======================================================================================
+//   ECOSYNC ENGINE: CHUNK 5 - DISCORD NOTIFICATION MONITOR
+// =======================================================================================
+
+function evaluateAlarmsAndAlert(sensor, currentVal, asset, nodeId, portLabel, webhookUrl, sheet, rowNum) {
+  if (!webhookUrl || webhookUrl.length < 10 || sensor.type === "Empty") return;
+
+  var currentFaultState = "FALSE";
+  var alertMessage = "";
+
+  // Strategy A: Evaluate binary alert switches
+  if (sensor.type.includes("Switch")) {
+    if (currentVal !== sensor.max) { 
+      currentFaultState = "TRUE";
+      alertMessage = "State Change Warning! Value reads `" + currentVal + "` (Expected: `" + sensor.max + "`)";
+    }
+  } 
+  // Strategy B: Evaluate numerical range thresholds
+  else {
+    if (currentVal < sensor.min) {
+      currentFaultState = "TRUE";
+      alertMessage = "Value fell below safe operational minimum! Current: **" + currentVal + "** (Min Target: `" + sensor.min + "`)";
+    } else if (currentVal > sensor.max) {
+      currentFaultState = "TRUE";
+      alertMessage = "Value exceeded safe operational maximum! Current: **" + currentVal + "** (Max Target: `" + sensor.max + "`)";
+    }
+  }
+
+  var previouslyInFault = (String(sensor.isFault).toUpperCase() === "TRUE");
+
+  // Logic Loop 1: Fresh breach state entry
+  if (currentFaultState === "TRUE" && !previouslyInFault) {
+     sheet.getRange(rowNum, sensor.colIdx).setValue("TRUE");
+     sheet.getRange(rowNum, sensor.colIdx + 1).setValue(currentVal);
+     sendDiscordPayload(webhookUrl, "🚨 **CRITICAL TANK BREACH ALERT**", "Asset Location: **" + asset + "** (Node ID: " + nodeId + ")\nInterface: `" + portLabel + " - " + sensor.type + "`\nStatus: " + alertMessage, 15158332);
+  } 
+  // Logic Loop 2: Safe recovery state entry
+  else if (currentFaultState === "FALSE" && previouslyInFault) {
+     sheet.getRange(rowNum, sensor.colIdx).setValue("FALSE");
+     sheet.getRange(rowNum, sensor.colIdx + 1).setValue(currentVal);
+     sendDiscordPayload(webhookUrl, "✅ **SYSTEM ENVIRONMENT FAULT RESOLVED**", "Asset Location: **" + asset + "** (Node ID: " + nodeId + ")\nInterface: `" + portLabel + " - " + sensor.type + "`\nStatus: Parameter metrics have returned to standard operational limits. Current: **" + currentVal + "**", 3066993);
+  } else {
+     // Log the new current reading into the config tab tracking column without generating alert noise
+     sheet.getRange(rowNum, sensor.colIdx + 1).setValue(currentVal);
+  }
+}
+
+function sendDiscordPayload(url, title, msg, embedColor) {
+  var body = JSON.stringify({
+    "embeds": [{
+      "title": title,
+      "description": msg,
+      "color": embedColor,
+      "timestamp": new Date().toISOString(),
+      "footer": { "text": "EcoSync Field Automated System Guard" }
+    }]
+  });
+  UrlFetchApp.fetch(url, { "method": "post", "contentType": "application/json", "payload": body, "muteHttpExceptions": true });
+}
+// =======================================================================================
+//   ECOSYNC ENGINE: CHUNK 6 - TAB SHEETS LOGGER & CONFIG PROVISIONER
+// =======================================================================================
+
+function logTelemetryToTab(ss, tabName, asset, nodeId, frameId, valArray, rssi, snr) {
+  var targetSheet = ss.getSheetByName(tabName) || ss.insertSheet(tabName);
+  
+  if (targetSheet.getLastRow() === 0) {
+    targetSheet.appendRow(["Timestamp", "Node ID", "Asset Placement", "Frame Index #", "S1 Metrics", "S2 Metrics", "S3 Metrics", "S4 Metrics", "Hub RSSI [dBm]", "Hub SNR [dB]"]);
+    targetSheet.getRange("A1:J1").setFontWeight("bold").setBackground("#e9edf5");
+  }
+  
+  targetSheet.appendRow([new Date(), nodeId, asset, frameId, valArray[0], valArray[1], valArray[2], valArray[3], rssi, snr]);
+}
+
+function upsertRowConfiguration(sheet, data) {
+  var rows = sheet.getDataRange().getValues();
+  var targetRowIdx = -1;
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]) === String(data.nodeId)) { targetRowIdx = i + 1; break; }
+  }
+  
+  var recordLine = [
+    data.nodeId, data.location, data.assetName, data.sleepSec,
+    data.s1.type, data.s1.min, data.s1.max, "FALSE", 0,
+    data.s2.type, data.s2.min, data.s2.max, "FALSE", 0,
+    data.s3.type, data.s3.min, data.s3.max, "FALSE", 0,
+    data.s4.type, data.s4.min, data.s4.max, "FALSE", 0,
+    data.discordUrl, data.aesKey
+  ];
+  
+  if (targetRowIdx !== -1) {
+    sheet.getRange(targetRowIdx, 1, 1, recordLine.length).setValues([recordLine]);
+  } else {
+    sheet.appendRow(recordLine);
+  }
+}
+
+function verifyOrBuildMasterConfigTab(ss) {
+  if (ss.getSheetByName("Config")) return;
+  var s = ss.insertSheet("Config", 0);
+  s.appendRow([
+    "Node ID", "Location", "Asset Name", "Sleep Interval (Sec)",
+    "S1 Type", "S1 Min Limit", "S1 Max Limit", "S1 Is Fault", "S1 Last Known",
+    "S2 Type", "S2 Min Limit", "S2 Max Limit", "S2 Is Fault", "S2 Last Known",
+    "S3 Type", "S3 Min Limit", "S3 Max Limit", "S3 Is Fault", "S3 Last Known",
+    "S4 Type", "S4 Min Limit", "S4 Max Limit", "S4 Is Fault", "S4 Last Known",
+    "Discord Webhook URL", "AES Decryption Key"
+  ]);
+  s.getRange("A1:Z1").setFontWeight("bold").setBackground("#dbeafe");
 }
