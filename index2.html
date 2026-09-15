@@ -1,0 +1,85 @@
+// =========================================================================
+//            CLEANED WEB APP DATA ORCHESTRATION PIPELINE
+// =========================================================================
+
+async function writeNodeConfiguration() {
+    const targetKey = document.getElementById('nodeKey').value;
+    
+    // Step A: Immediately enforce character verification rules
+    if (targetKey.length !== 16) {
+        alert("Configuration Blocked: AES key must be exactly 16 characters!");
+        return;
+    }
+
+    // Step B: Collect the form elements into a clean data bundle
+    const configurationBundle = captureNodeFormDataset(targetKey);
+
+    // Step C: Execute independent cloud and hardware worker tasks
+    const cloudSuccess = await syncConfigurationToGoogleSheets(configurationBundle);
+    
+    if (cloudSuccess) {
+        await flashNodeHardwareOverBluetooth(configurationBundle);
+    }
+}
+function captureNodeFormDataset(validAesKey) {
+    return {
+        "action": "registerNode",
+        "nodeId": document.getElementById('nodeId').value,
+        "location": document.getElementById('nodeLocation').value,
+        "assetName": document.getElementById('nodeAssetName').value,
+        "sleepSec": document.getElementById('nodeSleep').value,
+        "aesKey": validAesKey,
+        "discordUrl": document.getElementById('nodeDiscord').value,
+        
+        // Formats individual sensor elements cleanly for your database structure
+        "s1": { "type": document.getElementById('s1Type').value, "min": document.getElementById('s1Min').value, "max": document.getElementById('s1Max').value },
+        "s2": { "type": document.getElementById('s2Type').value, "min": document.getElementById('s2Min').value, "max": document.getElementById('s2Max').value },
+        "s3": { "type": document.getElementById('s3Type').value, "min": document.getElementById('s3Min').value, "max": document.getElementById('s3Max').value },
+        "s4": { "type": document.getElementById('s4Type').value, "min": document.getElementById('s4Min').value, "max": document.getElementById('s4Max').value }
+    };
+}
+async function syncConfigurationToGoogleSheets(dataset) {
+    const scriptUrlId = document.getElementById('hubScriptId').value;
+    
+    if (!scriptUrlId || scriptUrlId.length < 5) {
+        console.warn("Sheet update skipped: No central script ID found on the dashboard.");
+        return true; // Bypass silently to allow local bluetooth configuration anyway
+    }
+
+    const targetUrl = `https://google.com{scriptUrlId}/exec?secretToken=EcoSyncFieldAccessKey2026`;
+
+    try {
+        await fetch(targetUrl, {
+            method: "POST",
+            mode: "no-cors", 
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(dataset)
+        });
+        console.log("Database update packet executed successfully.");
+        return true;
+    } catch (error) {
+        alert("Database connection drop: " + error.message);
+        return false;
+    }
+}
+async function flashNodeHardwareOverBluetooth(dataset) {
+    const NODE_SERVICE_UUID = "4fa15562-812d-4d40-8d38-92212354c001";
+    
+    try {
+        // Request pairing authorization with the target physical enclosure box
+        const device = await navigator.bluetooth.requestDevice({ filters: [{ services: [NODE_SERVICE_UUID] }] });
+        const server = await device.gatt.connect(); 
+        const service = await server.getPrimaryService(NODE_SERVICE_UUID); 
+        const encoder = new TextEncoder();
+
+        // Target the discrete memory register channels to update the micro chip
+        await (await service.getCharacteristic("4fa15562-812d-4d40-8d38-92212354c002")).writeValue(encoder.encode(dataset.nodeId));
+        await (await service.getCharacteristic("4fa15562-812d-4d40-8d38-92212354c003")).writeValue(encoder.encode(dataset.sleepSec));
+        await (await service.getCharacteristic("4fa15562-812d-4d40-8d38-92212354c004")).writeValue(encoder.encode(dataset.aesKey));
+
+        alert(`Success! Node ${dataset.nodeId} configured and registered.`);
+        await server.disconnect();
+    } catch (error) {
+        alert("Wireless flashing broken: " + error.message);
+    }
+}
