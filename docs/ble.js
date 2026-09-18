@@ -1,37 +1,54 @@
-// BLE commissioning interface for the LR-SiFi project.
-// The ESP32 firmware will expose this custom service/characteristic.
 const BLE_SERVICE_UUID = '12345678-1234-5678-1234-56789abcdef0';
 const BLE_CONFIG_UUID  = '12345678-1234-5678-1234-56789abcdef1';
+const BLE_COMMAND_UUID = '12345678-1234-5678-1234-56789abcdef2';
 
 window.BleConfig = (() => {
   let device = null;
-  let characteristic = null;
+  let configCharacteristic = null;
+  let commandCharacteristic = null;
+
+  function status(message) {
+    const el = document.getElementById('status');
+    if (el) el.textContent = message;
+  }
 
   async function connect(type) {
-    const status = document.getElementById('status');
     const save = document.getElementById('save');
     if (!navigator.bluetooth) {
-      status.textContent = 'This browser does not support Web Bluetooth. Use a compatible browser/device for BLE commissioning.';
+      status('Web Bluetooth is not available in this browser. Open this page in Bluefy.');
       return;
     }
+
     try {
-      status.textContent = 'Choose the ' + type + ' unit…';
+      status('Choose the ' + type + ' unit…');
+
       device = await navigator.bluetooth.requestDevice({
         filters: [{ services: [BLE_SERVICE_UUID] }],
         optionalServices: [BLE_SERVICE_UUID]
       });
+
+      device.addEventListener('gattserverdisconnected', () => {
+        status('Disconnected from ' + (device.name || 'BLE device') + '.');
+        if (save) save.disabled = true;
+      });
+
       const server = await device.gatt.connect();
       const service = await server.getPrimaryService(BLE_SERVICE_UUID);
-      characteristic = await service.getCharacteristic(BLE_CONFIG_UUID);
-      status.textContent = 'Connected to ' + (device.name || 'BLE device') + '.';
-      save.disabled = false;
-      if (characteristic.properties.read) {
-        const value = await characteristic.readValue();
+
+      configCharacteristic = await service.getCharacteristic(BLE_CONFIG_UUID);
+      commandCharacteristic = await service.getCharacteristic(BLE_COMMAND_UUID);
+
+      status('Connected to ' + (device.name || 'BLE device') + '.');
+
+      if (configCharacteristic.properties.read) {
+        const value = await configCharacteristic.readValue();
         const text = new TextDecoder().decode(value);
         if (text) loadJson(text);
       }
+
+      if (save) save.disabled = false;
     } catch (err) {
-      status.textContent = 'BLE connection cancelled or failed: ' + err.message;
+      status('BLE connection failed: ' + err.message);
     }
   }
 
@@ -42,25 +59,35 @@ window.BleConfig = (() => {
         const el = document.getElementById(key);
         if (el) el.value = value;
       });
-    } catch (_) {
-      // Firmware may return a future binary/alternate representation.
+    } catch (err) {
+      status('Connected, but the device returned invalid configuration data.');
     }
   }
 
   async function save(fields) {
-    const status = document.getElementById('status');
-    if (!characteristic) return;
+    if (!configCharacteristic) {
+      status('Connect to the unit first.');
+      return;
+    }
+
     const obj = {};
-    fields.forEach(([id, value]) => {
+    fields.forEach(([id]) => {
       const el = document.getElementById(id);
-      obj[id] = el && el.type === 'number' ? Number(value) : value;
+      obj[id] = el && el.type === 'number' ? Number(el.value) : el.value;
     });
+
     try {
       const bytes = new TextEncoder().encode(JSON.stringify(obj));
-      await characteristic.writeValue(bytes);
-      status.textContent = 'Configuration written successfully.';
+      await configCharacteristic.writeValue(bytes);
+      status('Configuration saved to the unit. Rebooting…');
+
+      if (commandCharacteristic) {
+        await commandCharacteristic.writeValue(
+          new TextEncoder().encode('REBOOT')
+        );
+      }
     } catch (err) {
-      status.textContent = 'Configuration write failed: ' + err.message;
+      status('Configuration write failed: ' + err.message);
     }
   }
 
