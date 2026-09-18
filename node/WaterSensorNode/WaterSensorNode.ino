@@ -5,10 +5,33 @@
 #include "LoRaRadio.h"
 #include "Protocol.h"
 #include "PowerManager.h"
+#include "BleConfig.h"
 
 NodeConfig cfg;
 LoRaRadio radio;
+NodeBleConfig ble;
 uint32_t sequenceNo = 0;
+
+static bool enterBleIfRequested(bool coldBoot) {
+  if (!coldBoot) return false;
+
+  // GPIO9 is the XIAO ESP32-C6 BOOT button. Do not hold it during reset;
+  // GPIO9 is also a boot-strapping pin. Press it after the application starts.
+  pinMode(9, INPUT);
+  uint32_t start = millis();
+  while (millis() - start < 2000UL) {
+    if (digitalRead(9) == LOW) {
+      ble.begin(cfg);
+      while (ble.active()) {
+        ble.loop(cfg);
+        delay(10);
+      }
+      return true;
+    }
+    delay(10);
+  }
+  return false;
+}
 
 void setup() {
   pinMode(PIN_LED, OUTPUT);
@@ -21,13 +44,16 @@ void setup() {
   initSensors();
   initBatteryADC();
 
-  // GPIO7 is the SX1262 DIO1 wake source. It must be LOW while asleep.
-  pinMode(PIN_RADIO_DIO1, INPUT);
-
   bool radioWake = (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1);
 
+  if (enterBleIfRequested(!radioWake)) {
+    digitalWrite(PIN_LED, LED_OFF);
+    ESP.restart();
+  }
+
+  pinMode(PIN_RADIO_DIO1, INPUT);
+
   if (!radio.begin(cfg)) {
-    // Leave LED on as a hard fault indication.
     digitalWrite(PIN_LED, LED_ON);
     delay(500);
     goToDeepSleep();
@@ -38,7 +64,6 @@ void setup() {
   if (radioWake) {
     handleRadioWake();
   } else {
-    // First boot / reset: initialize duty-cycle RX and sleep.
     radio.startDutyCycleRX();
   }
 
@@ -47,7 +72,6 @@ void setup() {
 }
 
 void loop() {
-  // Never reached: this node is event-driven and uses deep sleep.
 }
 
 void handleRadioWake() {
@@ -67,7 +91,6 @@ void handleRadioWake() {
     return;
   }
 
-  // Hub has addressed this node.
   sensorsPower(true);
   delay(SENSOR_SETTLE_MS);
 
@@ -82,7 +105,6 @@ void handleRadioWake() {
   readTelemetry(t);
 
   sensorsPower(false);
-
   radio.sendTelemetry(t);
 
   AckPacket ack{};
