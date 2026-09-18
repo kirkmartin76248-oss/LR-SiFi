@@ -3,38 +3,41 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>LoRa Water Sensor Configuration</title>
+  <title>LR-SiFi Water Sensor Network</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main class="shell">
-    <section class="hero">
-      <div class="eyebrow">LR-SiFi</div>
-      <h1>Water Sensor Network</h1>
-      <p>Bluetooth configuration and commissioning</p>
-    </section>
+<main class="shell">
+  <section class="hero">
+    <div class="eyebrow">LR-SiFi</div>
+    <h1>Water Sensor Network</h1>
+    <p>Bluetooth commissioning</p>
+  </section>
 
-    <section class="cards">
-      <a class="card" href="hub.html">
-        <div class="icon">⌂</div>
-        <h2>Hub Config</h2>
-        <p>Connect to a XIAO ESP32-C6 hub and configure Wi-Fi, network, radio and node settings.</p>
-        <span class="button">Configure Hub</span>
-      </a>
+  <section class="cards">
+    <a class="card" href="hub.html">
+      <div class="icon">⌂</div>
+      <h2>Hub Config</h2>
+      <p>Configure the XIAO ESP32-C6 hub, Wi-Fi, Google Apps Script and LoRa network.</p>
+      <span class="button">Configure Hub</span>
+    </a>
 
-      <a class="card" href="node.html">
-        <div class="icon">◉</div>
-        <h2>Node Config</h2>
-        <p>Connect to a water-sensor node and configure its identity, radio and reporting settings.</p>
-        <span class="button">Configure Node</span>
-      </a>
-    </section>
+    <a class="card" href="node.html">
+      <div class="icon">◉</div>
+      <h2>Node Config</h2>
+      <p>Configure node identity, reporting interval and LoRa radio settings.</p>
+      <span class="button">Configure Node</span>
+    </a>
+  </section>
 
-    <section class="notice">
-      <strong>Commissioning mode</strong>
-      <p>Put the hub or node into BLE configuration mode before connecting.</p>
-      <p class="compat">Web Bluetooth requires a compatible browser. iPhone/iPad Safari currently does not provide native Web Bluetooth support.</p>
-    </section>
-  </main>
+  <section class="notice">
+    <strong>How to connect</strong>
+    <p>1. Power the unit and let it start normally.</p>
+    <p>2. Press the XIAO BOOT button within the first 2 seconds.</p>
+    <p>3. Open the matching page in Bluefy and tap Connect.</p>
+    <p>4. Read the current settings, edit them, then save. The unit will reboot.</p>
+    <p class="compat">Do not hold BOOT while resetting/powering the XIAO; GPIO9 is also the ESP32-C6 boot-strapping pin.</p>
+  </section>
+</main>
 </body>
 </html>
