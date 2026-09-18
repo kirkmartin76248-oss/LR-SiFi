@@ -1,1 +1,25 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Node Config</title><link rel="stylesheet" href="styles.css"></head><body><main class="shell"><section class="hero"><div class="eyebrow">BLE Commissioning</div><h1>Node Config</h1><p>Configure a water-sensor node.</p></section><section class="notice"><button id="connect" class="button">Connect to Node</button><p id="status">Not connected.</p></section><section class="notice"><h2>Node settings</h2><label>Node ID<br><input id="node" type="number" value="1"></label><br><label>Hub ID<br><input id="hub" value="HUB01"></label><br><label>Network ID<br><input id="network" value="WATER01"></label><br><label>Reporting interval (seconds)<br><input id="interval" type="number" value="300"></label><br><label>LoRa TX power (dBm)<br><input id="power" type="number" value="14"></label><br><button id="save" class="button" disabled>Save Node Config</button></section><p><a href="index.html">← Home</a></p></main><script src="ble.js"></script><script>const formFields=['node','hub','network','interval','power']; document.getElementById('connect').onclick=()=>BleConfig.connect('node'); document.getElementById('save').onclick=()=>BleConfig.save(formFields.map(id=>[id,document.getElementById(id).value]));</script></body></html>
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Node Config</title><link rel="stylesheet" href="styles.css"></head>
+<body><main class="shell">
+<section class="hero"><div class="eyebrow">BLE Commissioning</div><h1>Node Config</h1><p>Configure a water-sensor node.</p></section>
+<section class="notice"><button id="connect" class="button">Connect to Node</button><p id="status">Not connected.</p></section>
+<section class="notice"><h2>Node settings</h2>
+<label>Node ID<input id="node" type="number" min="1" max="255"></label>
+<label>Hub ID (numeric)<input id="hub" type="number" min="1" max="255"></label>
+<label>Network ID (numeric)<input id="network" type="number" min="0" max="255"></label>
+<label>Reporting interval (seconds)<input id="interval" type="number" min="300" max="43200"></label>
+<label>LoRa frequency (Hz)<input id="freq" type="number"></label>
+<label>Spreading factor<input id="sf" type="number" min="5" max="12"></label>
+<label>Bandwidth (Hz)<input id="bw" type="number"></label>
+<label>Coding rate (4/x)<input id="cr" type="number" min="5" max="8"></label>
+<label>TX power (dBm)<input id="power" type="number" min="-9" max="22"></label>
+<label>Config version<input id="version" type="number" min="0" max="65535"></label>
+<button id="save" class="button" disabled>Save & Reboot Node</button>
+</section><p><a href="index.html">← Home</a></p>
+<script src="ble.js"></script><script>
+document.getElementById('connect').onclick=()=>BleConfig.connect('node');
+const ids=['node','hub','network','interval','freq','sf','bw','cr','power','version'];
+document.getElementById('save').onclick=()=>BleConfig.save(ids.map(id=>[id]));
+</script></main></body></html>
