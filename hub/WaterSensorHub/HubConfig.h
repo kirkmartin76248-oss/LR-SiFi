@@ -13,6 +13,10 @@ struct HubConfig {
   String hubId = "HUB01";
   String networkId = "WATER01";
 
+  String wifiSsid = "";
+  String wifiPassword = "";
+  String googleScriptUrl = "";
+
   float frequencyMHz = 915.0f;
   float bandwidthKHz = 125.0f;
   uint8_t spreadingFactor = 7;
@@ -20,7 +24,8 @@ struct HubConfig {
   int8_t txPowerDbm = 14;
   uint16_t preambleSymbols = 1465;
   uint32_t pollIntervalSec = 300;
-  String googleScriptUrl = "";
+  uint16_t configVersion = 1;
+
   uint8_t nodeCount = 5;
   NodeConfig nodes[MAX_NODES];
 };
