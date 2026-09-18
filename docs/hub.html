@@ -1,1 +1,29 @@
-<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hub Config</title><link rel="stylesheet" href="styles.css"></head><body><main class="shell"><section class="hero"><div class="eyebrow">BLE Commissioning</div><h1>Hub Config</h1><p>Configure the XIAO ESP32-C6 hub.</p></section><section class="notice"><button id="connect" class="button">Connect to Hub</button><p id="status">Not connected.</p></section><section class="notice"><h2>Hub settings</h2><label>Hub ID<br><input id="hub" value="HUB01"></label><br><label>Network ID<br><input id="network" value="WATER01"></label><br><label>Wi-Fi SSID<br><input id="ssid"></label><br><label>Wi-Fi password<br><input id="password" type="password"></label><br><label>Google Apps Script URL<br><input id="url"></label><br><label>LoRa TX power (dBm)<br><input id="power" type="number" value="14"></label><br><button id="save" class="button" disabled>Save Hub Config</button></section><p><a href="index.html">← Home</a></p></main><script src="ble.js"></script><script>const formFields=['hub','network','ssid','password','url','power']; document.getElementById('connect').onclick=()=>BleConfig.connect('hub'); document.getElementById('save').onclick=()=>BleConfig.save(formFields.map(id=>[id,document.getElementById(id).value]));</script></body></html>
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hub Config</title><link rel="stylesheet" href="styles.css"></head>
+<body><main class="shell">
+<section class="hero"><div class="eyebrow">BLE Commissioning</div><h1>Hub Config</h1><p>Configure the XIAO ESP32-C6 hub.</p></section>
+<section class="notice"><button id="connect" class="button">Connect to Hub</button><p id="status">Not connected.</p></section>
+<section class="notice"><h2>Hub settings</h2>
+<label>Hub ID<input id="hub"></label>
+<label>Network ID<input id="network"></label>
+<label>Wi-Fi SSID<input id="ssid"></label>
+<label>Wi-Fi password<input id="password" type="password"></label>
+<label>Google Apps Script URL<input id="url"></label>
+<label>Poll interval (seconds)<input id="poll" type="number" min="5" max="43200"></label>
+<label>LoRa frequency (Hz)<input id="freq" type="number"></label>
+<label>Spreading factor<input id="sf" type="number" min="5" max="12"></label>
+<label>Bandwidth (Hz)<input id="bw" type="number"></label>
+<label>Coding rate (4/x)<input id="cr" type="number" min="5" max="8"></label>
+<label>TX power (dBm)<input id="power" type="number" min="-9" max="22"></label>
+<label>Preamble symbols<input id="preamble" type="number" min="8" max="65535"></label>
+<label>Number of nodes<input id="nodes" type="number" min="1" max="10"></label>
+<label>Config version<input id="version" type="number" min="0" max="65535"></label>
+<button id="save" class="button" disabled>Save & Reboot Hub</button>
+</section><p><a href="index.html">← Home</a></p>
+<script src="ble.js"></script><script>
+document.getElementById('connect').onclick=()=>BleConfig.connect('hub');
+const ids=['hub','network','ssid','password','url','poll','freq','sf','bw','cr','power','preamble','nodes','version'];
+document.getElementById('save').onclick=()=>BleConfig.save(ids.map(id=>[id]));
+</script></main></body></html>
