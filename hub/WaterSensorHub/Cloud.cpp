@@ -2,10 +2,14 @@
 
 void Cloud::begin(const HubConfig &cfg) {
   Serial.println("Cloud subsystem initialized.");
+  connectWiFi();
 }
 
 void Cloud::connectWiFi() {
-  // Placeholder for provisioning-managed Wi-Fi credentials.
+  if (WiFi.status() == WL_CONNECTED) return;
+  if (WiFi.SSID().length()) {
+    WiFi.disconnect(false);
+  }
 }
 
 void Cloud::sendTelemetry(const Telemetry &t, const HubConfig &cfg) {
@@ -13,7 +17,14 @@ void Cloud::sendTelemetry(const Telemetry &t, const HubConfig &cfg) {
     Serial.println("No Google Apps Script URL configured; telemetry retained on serial only.");
     return;
   }
-  connectWiFi();
+
+  if (WiFi.status() != WL_CONNECTED && cfg.wifiSsid.length()) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(cfg.wifiSsid.c_str(), cfg.wifiPassword.c_str());
+    uint32_t start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 10000UL) delay(100);
+  }
+
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
