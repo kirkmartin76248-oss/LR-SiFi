@@ -9,8 +9,9 @@ Logical request fields:
 - nodeId
 - sequence
 - configRevision
-- receivedAt
+- receivedAtUtcMs
 - rssi
+- configFingerprint
 - batteryMv
 - values[4]
 - presentMask
@@ -20,7 +21,8 @@ The exact HTTP encoding can change without changing the device protocol.
 ## Backend processing
 
 1. Authenticate and validate the Hub request.
-2. Identify customer and Hub.
+2. Preserve `receivedAtUtcMs` as the measurement's Hub receive timestamp; do not replace it with backend arrival time.
+3. Identify customer and Hub.
 3. Identify Node.
 4. Read authoritative Node Config.
 5. Confirm Node belongs to the Hub/location.
@@ -38,6 +40,7 @@ Logical response fields:
 - op: pendingUpdate
 - nodeId
 - configRevision
+- configFingerprint
 - config:
   - hubId
   - hubMac
@@ -57,3 +60,5 @@ The Hub stores this update in its pending mailbox. It does not wait for or conta
 - Hub retries failed requests.
 - Hub must not erase a pending Node update until CONFIG_ACK is received from that Node.
 - Backend remains authoritative if Hub and backend disagree.
+- The backend does not require a Node to be online or Wi-Fi-connected during the Node wake transaction.
+- A configuration change generates a new Config Fingerprint automatically; customers do not manage fingerprint values.
