@@ -26,7 +26,7 @@ The customer Monitoring Portal and Technician Installer are separate frontend ap
 
 GitHub Pages hosts frontend code only. Customer data, secrets, authorization, telemetry processing, alert evaluation, and Google Sheet access remain in the backend/API layer.
 
-The Hub has no sensors. All sensor measurements belong to Nodes.
+The Hub has no sensors. All sensor measurements belong to Nodes. The Hub does not maintain a Node list or Node configuration database. It only keeps a bounded pending-configuration mailbox keyed by Node ID for updates awaiting the next Node wake.
 
 ## 2. Customer/account model
 
@@ -294,7 +294,7 @@ Hub dashboard information can include:
 - Wi-Fi status
 - Firmware
 - ESP-NOW status
-- Number of connected/known Nodes
+- Number of Nodes reporting through the backend (if shown by the portal)
 - Configuration status
 
 Do not display temperature, dissolved oxygen, flow, or other sensor measurements as if they were Hub measurements.
