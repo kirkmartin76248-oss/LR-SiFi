@@ -20,7 +20,7 @@ The Node never waits for Google Apps Script, Wi-Fi, or the backend.
 6. Hub sends either NO_UPDATE or CONFIG_UPDATE.
 7. If a configuration update is sent, Node validates, stores it persistently, and sends CONFIG_ACK.
 8. Node powers down sensors/radio and enters sleep.
-9. Independently, the Hub forwards the received telemetry to the backend with Hub timestamp and Hub-measured RSSI.
+9. Independently, the Hub forwards the received telemetry to the backend with Hub UTC timestamp and Hub-measured RSSI. If Wi-Fi/backend is unavailable, the Hub stores the record in persistent offline telemetry storage and uploads it later with the original timestamp.
 10. Backend may later place a new configuration update into the Hub's pending-update mailbox.
 
 ## Packet rules
@@ -32,7 +32,10 @@ The Node never waits for Google Apps Script, Wi-Fi, or the backend.
 - message_id identifies the transaction.
 - Node sequence increments for each telemetry report.
 - Hub RSSI is measured at the Hub and is not supplied by the Node.
-- Configuration updates carry a monotonically increasing config_revision.
+- The Node includes a 4-byte Config Fingerprint in every telemetry packet.
+- The Hub ACK includes the current/pending 4-byte Config Fingerprint and a Config Changed flag.
+- Configuration updates carry a monotonically increasing config_revision and the new 4-byte Config Fingerprint.
+- The Config Fingerprint is automatic; customers do not enter or manage it.
 - A Node only applies a configuration update when its revision is newer than the stored revision.
 - Telemetry ACK and CONFIG ACK are different messages.
 
@@ -55,16 +58,19 @@ Telemetry contains:
 - config_revision
 - node_uptime_seconds
 - battery_mv
+- 4-byte config_fingerprint
 - four raw sensor-port values
 - enabled/present mask
 
 Analog values are millivolts. Digital values are normalized 0=inactive, 1=active.
 
 The Hub adds:
-- received_at timestamp
+- received_at_utc_ms timestamp from the NTP-synchronized Hub clock
 - Hub RSSI
 - Hub ID
 - location/backend identity as configured
+
+If Wi-Fi is offline, the Hub stores the complete backend record locally and later forwards it without changing the original receive timestamp.
 
 Sensor conversion and alert evaluation remain server-side.
 
@@ -72,6 +78,7 @@ Sensor conversion and alert evaluation remain server-side.
 
 A configuration update contains only device-executable configuration:
 - config_revision
+- config_fingerprint
 - node_id
 - hub_id
 - hub_mac
@@ -92,6 +99,8 @@ Configuration updates are retained in the pending mailbox until the Node acknowl
 Pending configuration updates should survive Hub restart using Hub nonvolatile storage. This mailbox is not a Node database; it contains only updates awaiting delivery.
 
 ## Timing
+
+The Hub maintains UTC time using NTP (default server: `pool.ntp.org`). Node telemetry is timestamped by the Hub at ESP-NOW receipt time, not when the record eventually reaches Google Apps Script. Offline records retain that original timestamp.
 
 The protocol intentionally avoids a long Hub polling/preamble cycle.
 
