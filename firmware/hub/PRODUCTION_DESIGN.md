@@ -2,6 +2,8 @@
 
 Hardware: Seeed XIAO ESP32-C6.
 
+Timing: Hub UTC time is synchronized with NTP using `pool.ntp.org` by default. The Hub timestamps Node telemetry at ESP-NOW receive time.
+
 ## Startup state machine
 
 BOOT -> LOAD_CONFIG -> RF_SWITCH -> BLE_WINDOW -> WIFI -> ESPNOW -> RUN
@@ -55,16 +57,25 @@ Backend record includes:
 - raw sensor values
 - battery_mv
 - hub_id
-- received timestamp
+- received timestamp (NTP-synchronized UTC milliseconds)
 - Hub RSSI
+- Node Config Fingerprint
 
 The receive path must not block on HTTPS or Apps Script.
 
 ## Backend failure
 
-If Wi-Fi/backend is unavailable, the Hub should retain a bounded telemetry queue and retry asynchronously. The Node still receives its immediate ACK and completes its sleep cycle.
+If Wi-Fi/backend is unavailable, the Hub must retain Node telemetry in a bounded persistent offline queue and retry asynchronously. The Node still receives its immediate ACK and completes its sleep cycle.
 
-Queue capacity and retention policy are firmware implementation parameters to be tuned during bench testing.
+Each queued record retains the original Hub receive timestamp and Hub RSSI. Once the backend accepts a record, the Hub removes that queued record. Queue capacity and retention policy are firmware implementation parameters to be tuned during bench testing.
+
+Offline telemetry buffering is not a Node list and is not used as authoritative Node configuration.
+
+## Configuration fingerprint
+
+Every Node telemetry packet carries a 4-byte Config Fingerprint. The Hub ACK carries the relevant fingerprint and a `config_changed` flag. A fingerprint mismatch causes the Node to perform its normal UPDATE_QUERY; the Hub then sends the complete pending configuration update and its new fingerprint. Customers do not manage fingerprint values.
+
+The Hub still does not maintain a Node list. A fingerprint associated with an update exists only in the pending mailbox entry.
 
 ## Pending configuration
 
