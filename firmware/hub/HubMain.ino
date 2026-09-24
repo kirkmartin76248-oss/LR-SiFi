@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <esp_now.h>
 #include <Preferences.h>
+#include <time.h>
 #include "../../protocol/espnow_protocol.h"
 
 using namespace KrekProtocol;
@@ -14,7 +15,10 @@ static constexpr int PIN_RF_SWITCH_POWER = 3;
 static constexpr int PIN_RF_SWITCH_SELECT = 14;
 
 static constexpr uint32_t BACKEND_RETRY_MS = 5000;
+static constexpr uint32_t NTP_SYNC_TIMEOUT_MS = 15000;
 static constexpr size_t MAX_PENDING_UPDATES = 16;
+static constexpr char NTP_SERVER[] = "pool.ntp.org";
+static constexpr size_t CONFIG_FINGERPRINT_LEN = KrekProtocol::CONFIG_FINGERPRINT_LEN;
 
 enum class HubState : uint8_t {
   BOOT,
@@ -31,6 +35,7 @@ struct PendingUpdate {
   bool valid;
   char node_id[NODE_ID_LEN];
   uint32_t revision;
+  uint8_t config_fingerprint[CONFIG_FINGERPRINT_LEN];
   ConfigUpdate packet;
 };
 
@@ -39,6 +44,7 @@ struct HubRuntime {
   Preferences prefs;
   PendingUpdate pending[MAX_PENDING_UPDATES]{};
   uint32_t last_backend_attempt_ms = 0;
+  bool ntp_time_valid = false;
 };
 
 static HubRuntime rt;
@@ -83,6 +89,26 @@ static void removePending(int index) {
   memset(&rt.pending[index], 0, sizeof(PendingUpdate));
 }
 
+static uint64_t hubUtcMillis() {
+  time_t now = time(nullptr);
+  if (now < 1700000000) return 0; // Not synchronized yet.
+  return (uint64_t)now * 1000ULL;
+}
+
+static bool synchronizeNtp() {
+  configTime(0, 0, NTP_SERVER);
+  const uint32_t start = millis();
+  while (millis() - start < NTP_SYNC_TIMEOUT_MS) {
+    if (time(nullptr) >= 1700000000) {
+      rt.ntp_time_valid = true;
+      return true;
+    }
+    delay(100);
+  }
+  rt.ntp_time_valid = false;
+  return false;
+}
+
 // This callback is intentionally limited to the fast ESP-NOW path.
 // No Wi-Fi, HTTPS, Preferences, or slow work belongs here.
 static void onEspNowReceive(const esp_now_recv_info_t* info, const uint8_t* data, int len) {
@@ -104,6 +130,20 @@ static void onEspNowReceive(const esp_now_recv_info_t* info, const uint8_t* data
     memcpy(ack.h.node_id, h->node_id, NODE_ID_LEN);
     ack.acknowledged_sequence = t->h.sequence;
 
+    // If a pending update exists and its fingerprint differs from the Node's
+    // reported fingerprint, tell the Node to request the complete config.
+    const int pendingIdx = findPending(t->h.node_id);
+    ack.config_changed = 0;
+    memcpy(ack.config_fingerprint, t->config_fingerprint, CONFIG_FINGERPRINT_LEN);
+    if (pendingIdx >= 0 && memcmp(rt.pending[pendingIdx].config_fingerprint,
+                                  t->config_fingerprint,
+                                  CONFIG_FINGERPRINT_LEN) != 0) {
+      ack.config_changed = 1;
+      memcpy(ack.config_fingerprint,
+             rt.pending[pendingIdx].config_fingerprint,
+             CONFIG_FINGERPRINT_LEN);
+    }
+
     esp_now_send(info->src_addr, reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
 
     // Backend forwarding is queued for the main loop.
@@ -124,6 +164,7 @@ static void onEspNowReceive(const esp_now_recv_info_t* info, const uint8_t* data
       reply.h.sequence = q->h.sequence;
       memcpy(reply.h.node_id, q->h.node_id, NODE_ID_LEN);
       reply.current_config_revision = q->current_config_revision;
+      memcpy(reply.config_fingerprint, q->config_fingerprint, CONFIG_FINGERPRINT_LEN);
       esp_now_send(info->src_addr, reinterpret_cast<const uint8_t*>(&reply), sizeof(reply));
     } else {
       ConfigUpdate update = rt.pending[idx].packet;
@@ -157,13 +198,16 @@ static void enterProvisioningWindow() {
 }
 
 static void loadPersistentConfiguration() {
-  // Hub identity, Wi-Fi credentials, backend URL, and pending mailbox
-  // are loaded here. The Hub still does not load a Node list.
+  // Hub identity, Wi-Fi credentials, backend URL, pending mailbox,
+  // and persistent offline telemetry queue are loaded here.
+  // The Hub still does not load a Node list.
 }
 
 static void serviceBackendQueue() {
   // Asynchronous HTTPS/Apps Script processing belongs here.
   // A slow backend must never block ESP-NOW ACKs.
+  // Each queued record carries receivedAtUtcMs and Hub RSSI.
+  // Records are retained locally until backend acceptance.
 }
 
 static void serviceWiFi() {
@@ -185,6 +229,7 @@ void setup() {
 
   rt.state = HubState::WIFI;
   serviceWiFi();
+  synchronizeNtp();
 
   rt.state = HubState::ESPNOW;
   if (!beginEspNow()) {
