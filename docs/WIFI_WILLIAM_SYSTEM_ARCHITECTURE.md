@@ -16,9 +16,15 @@ Current wireless architecture is **ESP-NOW from Node to Hub**. LoRa is not part 
 
 Runtime path:
 
-Node -> ESP-NOW -> Hub -> Wi-Fi -> customer-specific Google Apps Script -> customer's Google Sheet -> Krek Labs mobile app
+Node -> ESP-NOW -> Hub -> Wi-Fi -> customer-specific Google Apps Script/backend -> customer's Google Sheet -> Krek Labs Monitoring Portal (web/PWA)
 
-BLE is used for local installation/provisioning/configuration of Hub and Node.
+BLE is used for local installation/provisioning/configuration of Hub and Node through the separate Krek Labs Installer web application, intended to be opened in a BLE-capable browser such as Bluefy on iPhone.
+
+The customer Monitoring Portal and Technician Installer are separate frontend applications. The preferred production deployment is separate GitHub Pages repositories with custom subdomains:
+- `monitor.kreklabs.com` -> Monitoring Portal
+- `install.kreklabs.com` -> Technician Installer
+
+GitHub Pages hosts frontend code only. Customer data, secrets, authorization, telemetry processing, alert evaluation, and Google Sheet access remain in the backend/API layer.
 
 The Hub has no sensors. All sensor measurements belong to Nodes.
 
@@ -250,7 +256,7 @@ Do not display temperature, dissolved oxygen, flow, or other sensor measurements
 
 ## 11. Node installation flow
 
-App:
+Installer web application:
 1. Select customer location.
 2. Find Node over BLE.
 3. Identify/register hardware.
@@ -262,12 +268,13 @@ App:
    - For Digital sensors, select Active Level: HIGH or LOW.
    - Firmware uses Active HIGH -> pull-down or Active LOW -> pull-up.
 7. Configure reporting/sleep interval.
-8. Configure any other supported Node settings.
-9. Write configuration to persistent Node memory.
-10. Read back and verify Node ID, Hub MAC, sensor-port configuration, and other applicable settings.
-11. Run sensor/device test.
-12. Register/update Node Config in the customer's sheet.
-13. Ask: **Install another node?**
+8. Configure the Node-wide Sensor Delay. This is one value for the Node and is selected to satisfy the sensor with the longest required stabilization time.
+9. Configure any other supported Node settings.
+10. Write configuration to persistent Node memory.
+11. Read back and verify Node ID, Hub MAC, sensor-port configuration, Sensor Delay, reporting interval, and other applicable settings.
+12. Run sensor/device test.
+13. Register/update Node Config in the customer's sheet.
+14. Ask: **Install another node?**
     - Install Another Node
     - Continue
 
@@ -275,7 +282,7 @@ The app must not require the customer to re-enter the Google Apps Script URL dur
 
 ## 12. Hub installation flow
 
-App:
+Installer web application:
 1. Select customer location.
 2. Find Hub over BLE.
 3. Configure Wi-Fi.
@@ -296,15 +303,29 @@ App:
 6. If continuing, create first location and install equipment.
 7. If skipping, enter the normal app with an empty system and return to setup later.
 
-## 14. App structure
+## 14. Web application structure
 
-Primary app areas:
+There are two separate frontend applications.
+
+### Krek Labs Monitoring Portal
+
+Customer-facing web/PWA application hosted on GitHub Pages.
+
+Primary areas:
 - Dashboard
 - Locations
 - Alerts
 - Settings
 
-Installation is available as a prominent action and can be started from the appropriate area.
+It is designed for PC, Mac, iPhone, Android, and tablet browsers. No app-store installation is required.
+
+### Krek Labs Installer
+
+Technician-facing web application hosted on GitHub Pages and opened through a BLE-capable browser such as Bluefy on iPhone.
+
+It handles Hub and Node discovery, provisioning, read-back verification, registration, and installation tests.
+
+Installation is therefore separated from normal customer monitoring rather than being embedded in the customer dashboard.
 
 Dashboard:
 - Overall system status
@@ -356,6 +377,7 @@ At minimum, persistent Node configuration includes:
 - Per-port signal mode (`ANALOG` or `DIGITAL`)
 - Per-port Digital Active Level when applicable
 - Reporting/sleep interval
+- Node-wide Sensor Delay
 - Other supported runtime settings
 
 The installation contract is:
@@ -364,7 +386,21 @@ The installation contract is:
 
 The backend Node Config and physical Node configuration must agree. Replacement Nodes use the universal firmware/default identity and are provisioned with the customer's Node ID and Hub MAC during installation.
 
-## 17. Change-control rule
+## 17. Frontend/backend separation and security
+
+The Monitoring Portal and Installer are public frontend applications and must not contain secrets.
+
+GitHub Pages code must never contain:
+- Customer passwords
+- Google Sheet credentials
+- Backend secrets
+- Private access tokens
+
+The public frontend communicates with the protected backend/API, which enforces authorization before accessing customer data or performing configuration operations.
+
+The Installer may use BLE locally to communicate with hardware, but device registration and customer data operations still pass through the backend contract.
+
+## 18. Change-control rule
 
 When a design decision changes:
 1. Update this architecture document first.
@@ -375,7 +411,7 @@ When a design decision changes:
 
 Do not silently change one layer without checking the other layers.
 
-## 18. Legacy code note
+## 19. Legacy code note
 
 The existing repository files named Google Script, Node, and Gateway were written under an earlier architecture. They should be treated as implementation starting points/reference material, not as the final specification.
 
