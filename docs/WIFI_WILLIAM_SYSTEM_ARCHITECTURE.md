@@ -102,6 +102,8 @@ The sheet is intentionally organized so high-volume telemetry is split by locati
 - Description
 - Status/metadata
 - Data-tab name/identifier
+- Discord Alert Webhook
+- Discord Monthly Status Webhook
 
 **Alerts / Events**
 - Alert and recovery history
@@ -202,20 +204,57 @@ NORMAL -> ALERT ACTIVE -> RECOVERED -> NORMAL
 
 A persistent out-of-range condition should not generate a new email/push notification on every measurement unless the customer explicitly configures that behavior.
 
-## 8. Notifications
+## 8. Discord notifications and monthly status reports
 
-Notifications must work even when the Krek Labs app is closed or the customer is not currently logged in.
+The current notification architecture uses Discord webhooks rather than a dedicated Krek Labs push-notification service.
 
-Email:
-- Apps Script/backend can send email to authorized customer contacts based on the customer's Users/Contacts and notification settings.
+Each customer **location** has two separate Discord webhooks:
 
-Push:
-- The mobile app registers each authorized user's device with the notification service.
-- Push delivery is independent of the app being open.
-- Logging out should not automatically mean the person stops receiving alerts unless the user disables notifications or the account/device is deactivated.
-- Tapping a push notification should deep-link to the relevant location/node/sensor/alert in the app.
+- `ALERT_WEBHOOK` — immediate/actionable alerts for that location.
+- `REPORT_WEBHOOK` — scheduled monthly status reports/summaries for that location.
 
-A user can have access to some locations but not others, so notification routing must respect location permissions.
+These are location-specific, not customer-wide. Multiple Nodes at the same location share that location's alert channel and monthly report channel.
+
+When a customer creates a new location, the location-creation flow must ask for:
+1. Discord Alert Webhook
+2. Discord Monthly Status Webhook
+
+The customer can enter/configure these during location creation and may update them later through authorized location configuration. The webhook URLs are stored server-side/customer configuration and are never written to ESP32 firmware or exposed in Node telemetry.
+
+Routing is:
+
+**Node ID -> Node Config -> Location -> location webhook configuration**
+
+### Alert webhook behavior
+
+`ALERT_WEBHOOK` handles immediate/actionable events. Stateful alert handling should:
+- Send once when a condition becomes active/out of tolerance.
+- Suppress repeated notifications while the same condition remains active.
+- Send one recovery/`NORMAL` notification when the condition returns to normal.
+- Send a new alert if the condition later recurs.
+
+This prevents notification spam while preserving the alert lifecycle.
+
+### Monthly status webhook behavior
+
+`REPORT_WEBHOOK` receives the scheduled monthly status report for that location.
+
+The monthly report is a detailed operational summary and should include, as applicable:
+- Concise overall location/system summary
+- Per-device communication/status information
+- Battery status
+- Water temperature
+- Dissolved oxygen
+- Water-flow status/duration as applicable
+- Air-flow status/duration as applicable
+- Alert/event history for the reporting period
+- Device health/status information
+
+The report is separate from immediate alerts so routine reporting does not interfere with the actionable alert channel.
+
+Discord credentials/webhook URLs remain server-side and are never stored in ESP32 firmware.
+
+A user can have access to some locations but not others, so the Monitoring Portal must respect location permissions when displaying alert/report configuration or history.
 
 ## 9. Locations
 
@@ -228,6 +267,12 @@ A location contains:
 - One or more hubs
 - One or more nodes
 - One location-specific telemetry tab
+- One Discord Alert Webhook
+- One Discord Monthly Status Webhook
+
+When a new location is created, the customer/authorized installer is prompted for both Discord webhook URLs as part of the location setup. The location is not required to have a webhook if the customer's operational design intentionally leaves that channel unconfigured, but the setup flow must explicitly present both fields rather than assuming a customer-wide webhook.
+
+The Apps Script uses the location's webhook configuration when routing alerts and monthly status reports.
 
 The Hub itself has no sensor measurements.
 
@@ -300,7 +345,7 @@ Installer web application:
 5. Choose:
    - Continue setup
    - Skip setup for now
-6. If continuing, create first location and install equipment.
+6. If continuing, create first location. During location creation, collect the location's Discord Alert Webhook and Discord Monthly Status Webhook, then install equipment.
 7. If skipping, enter the normal app with an empty system and return to setup later.
 
 ## 14. Web application structure
@@ -338,6 +383,7 @@ Location:
 - Node list
 - Node-derived current values
 - Location-level graphs based on selected/all nodes
+- Location alert/report configuration status
 
 Node:
 - Current sensor values
