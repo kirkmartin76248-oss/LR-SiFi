@@ -1,28 +1,20 @@
-# Krek Labs ESP-NOW Water Monitoring Network
+# ESP-NOW Reference / Legacy Work
 
-This folder contains the current locked ESP-NOW architecture and relay firmware work for the Krek Labs water-monitoring project.
+This directory contains earlier ESP-NOW relay experiments and bench firmware. It is retained for reference.
 
-## System
-Sensor Node → ESP-NOW LR → XIAO ESP32-C6 Relay → Wi-Fi → Google Apps Script/Sheets → Discord
+The current production specification is in:
+- docs/WIFI_WILLIAM_SYSTEM_ARCHITECTURE.md
+- protocol/ESP_NOW_PROTOCOL.md
+- protocol/device_config_schema.md
+- protocol/espnow_protocol.h
+- firmware/hub/PRODUCTION_DESIGN.md
+- backend/ESP_NOW_BACKEND_CONTRACT.md
 
-## Hardware
-- Remote node: DFRobot Beetle ESP32-C6 Mini DFR1117
-- Relay: Seeed Studio XIAO ESP32-C6
-- Relay antenna: external 2.4 GHz 7 dBi antenna through U.FL
-- Relay power: external 5 V to VBUS
-- Relay backup battery: 3.7 V Li-ion to BAT
-- No external RTC
-- No external storage
-- Sensor node battery: 1S 3.7 V battery
-- Sensor power switched by TPS22929D
+## Current production hardware
 
-## Current status
-Architecture is locked. Relay firmware v0.1 has been generated for bench testing. BLE commissioning, production TLS validation, OTA, final flash wear optimization, and final watchdog policy remain before field release.
+- Node: ESP32-C3 SuperMini
+- Hub: Seeed XIAO ESP32-C6
+- Hub antenna: U.FL/external 2.4 GHz antenna
+- Runtime: Node -> ESP-NOW -> Hub -> Wi-Fi -> customer backend
 
-See:
-- ARCHITECTURE.md
-- PROTOCOL.md
-- CONFIG.md
-- BACKEND.md
-- STATUS.md
-- relay/relay.ino
+Older files in this directory may refer to different node hardware, relay behavior, polling, or configuration assumptions. Do not treat those files as the production source of truth.
