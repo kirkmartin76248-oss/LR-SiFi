@@ -1,7 +1,9 @@
 # WiFi William / Krek Labs Sensor Monitoring System — Current Architecture
 
 **Status:** Current working specification  
-**Last updated:** 2026-09-24  
+**Last updated:** 2026-09-24
+
+**Recent architecture change:** Node sensor ports are now configured as Analog or Digital in firmware. Digital ports also store an Active Level and use the corresponding internal pull resistor.  
 **Company:** Krek Labs, LLC
 
 This document supersedes earlier assumptions where they conflict. The GitHub repository is the engineering source of truth for the firmware, Apps Script, sheet schema, and mobile-app architecture.
@@ -128,21 +130,24 @@ If a new location is registered and its data tab does not exist, the script crea
 
 Location tab names must be sanitized for Google Sheets naming restrictions and collisions.
 
-## 5. Node Config is authoritative for node-specific alert limits
+## 5. Node sensor-port configuration and Node Config authority
 
 Do **not** create a separate alert-rule table for every ordinary node sensor limit if those limits naturally belong to the node configuration.
 
-Node Config contains, for each configured sensor:
+Node Config contains, for each configured sensor port:
+- Enabled/disabled state
+- Signal/input mode: `ANALOG` or `DIGITAL`
 - Sensor type
-- Enabled/disabled state as appropriate
-- Conversion parameters as needed
-- Low alert limit
-- High alert limit
+- For Analog: conversion parameters as needed
+- For Digital: Active Level (`HIGH` or `LOW`)
+- Low/high alert limits when applicable
 - Any sensor-specific alarm behavior
+
+Firmware uses the port's signal/input mode to configure the physical GPIO/ADC behavior. Analog means ADC input and raw millivolt reporting. Digital means digital input plus the configured internal pull resistor. The Active Level determines which physical GPIO level means logical `active`; firmware reports the normalized logical state as `1` active or `0` inactive.
 
 Example conceptual fields:
 
-Node ID | Location | Hub ID | Sleep Interval | Sensor 1 Type | S1 Low | S1 High | Sensor 2 Type | S2 Low | S2 High | Sensor 3 Type | S3 Low | S3 High | Sensor 4 Type | S4 Low | S4 High
+Node ID | Location | Hub ID | Sleep Interval | Sensor 1 Type | S1 Mode | S1 Active Level | S1 Low | S1 High | Sensor 2 Type | S2 Mode | S2 Active Level | S2 Low | S2 High | Sensor 3 Type | S3 Mode | S3 Active Level | S3 Low | S3 High | Sensor 4 Type | S4 Mode | S4 Active Level | S4 Low | S4 High
 
 This keeps the configuration and its alarm limits together and makes the app's Node Configuration screen map naturally to the sheet.
 
@@ -153,11 +158,14 @@ The Apps Script reads the node's limits when processing measurements.
 The Node should continue to send raw measurement values in the compact device payload wherever practical.
 
 For the current water-monitoring design:
-- Analog sensors are transmitted as millivolts
-- Digital/thresholded switch behavior can be represented according to the final firmware protocol
-- Battery is transmitted as millivolts
+- Analog sensors are transmitted as millivolts.
+- Digital sensors are configured in firmware as Digital inputs with an Active Level of HIGH or LOW.
+- For a Digital port, firmware configures the internal pull resistor opposite the active level: Active HIGH -> internal pull-down; Active LOW -> internal pull-up.
+- Firmware reports Digital state logically as `1 = active` and `0 = inactive`, so a water-flow/pressure switch can be wired either active-high or active-low without changing the application protocol.
+- Analog ports use the ADC and do not enable a digital pull-up/pull-down.
+- Battery is transmitted as millivolts.
 
-The Apps Script performs sensor conversion using the Node Config sensor type and parameters.
+The Apps Script performs analog sensor conversion using the Node Config sensor type and parameters. Digital interpretation does not require server-side inversion because firmware normalizes the configured active level to logical active/inactive state, although Node Config retains the Active Level for configuration, display, diagnostics, and re-provisioning.
 
 This keeps conversion/calibration logic server-side and allows configuration changes without reflashing field devices.
 
@@ -249,11 +257,17 @@ App:
 4. Assign Node number/ID.
 5. Assign Hub.
 6. Configure four sensor ports.
+   - Select sensor type or Disabled.
+   - Firmware signal mode is derived as `ANALOG` or `DIGITAL` from the selected sensor configuration.
+   - For Digital sensors, select Active Level: HIGH or LOW.
+   - Firmware uses Active HIGH -> pull-down or Active LOW -> pull-up.
 7. Configure reporting/sleep interval.
 8. Configure any other supported Node settings.
-9. Run sensor/device test.
-10. Register/update Node Config in the customer's sheet.
-11. Ask: **Install another node?**
+9. Write configuration to persistent Node memory.
+10. Read back and verify Node ID, Hub MAC, sensor-port configuration, and other applicable settings.
+11. Run sensor/device test.
+12. Register/update Node Config in the customer's sheet.
+13. Ask: **Install another node?**
     - Install Another Node
     - Continue
 
@@ -330,7 +344,27 @@ Before production implementation, the code must be reconciled with this document
 - multi-user/customer model
 - mobile app/API interface
 
-## 16. Change-control rule
+## 16. Node configuration write/verify contract
+
+Node configuration is not only a backend registration. During BLE installation the app writes the selected configuration into persistent Node memory and then reads it back before registration.
+
+At minimum, persistent Node configuration includes:
+- Customer-assigned Node ID
+- Assigned Hub ID/reference
+- Assigned Hub ESP-NOW MAC address
+- Per-port sensor type
+- Per-port signal mode (`ANALOG` or `DIGITAL`)
+- Per-port Digital Active Level when applicable
+- Reporting/sleep interval
+- Other supported runtime settings
+
+The installation contract is:
+
+**Configure -> Write to Node -> Read Back/Verify -> Register -> Test**
+
+The backend Node Config and physical Node configuration must agree. Replacement Nodes use the universal firmware/default identity and are provisioned with the customer's Node ID and Hub MAC during installation.
+
+## 17. Change-control rule
 
 When a design decision changes:
 1. Update this architecture document first.
@@ -341,7 +375,7 @@ When a design decision changes:
 
 Do not silently change one layer without checking the other layers.
 
-## 17. Legacy code note
+## 18. Legacy code note
 
 The existing repository files named Google Script, Node, and Gateway were written under an earlier architecture. They should be treated as implementation starting points/reference material, not as the final specification.
 
