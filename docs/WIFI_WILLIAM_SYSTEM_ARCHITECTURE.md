@@ -4,6 +4,7 @@
 **Last updated:** 2026-09-24
 
 **Recent architecture change:** Node sensor ports are now configured as Analog or Digital in firmware. Digital ports also store an Active Level and use the corresponding internal pull resistor.  
+**Timing/configuration change:** Node telemetry now carries a 4-byte Config Fingerprint. The Hub timestamps received telemetry using an NTP-synchronized UTC clock, and telemetry is retained locally while Wi-Fi/backend connectivity is unavailable.  
 **Company:** Krek Labs, LLC
 
 This document supersedes earlier assumptions where they conflict. The GitHub repository is the engineering source of truth for the firmware, Apps Script, sheet schema, and mobile-app architecture.
@@ -279,6 +280,40 @@ The Hub itself has no sensor measurements.
 Location dashboards aggregate or display measurements from the Nodes assigned to that location.
 
 ## 10. Hub
+
+The Hub is the time authority for telemetry forwarding. It maintains an NTP-synchronized UTC clock and timestamps each Node measurement when the measurement is received over ESP-NOW. The timestamp is attached to the backend payload and is preserved if the record must wait in the Hub's offline queue.
+
+Default NTP server:
+- `pool.ntp.org`
+
+Timestamps should be represented as UTC Unix milliseconds in the Hub/backend contract. Human-readable ISO-8601 formatting can be produced by the backend/Apps Script.
+
+### Configuration fingerprint
+
+Every Node telemetry packet carries a **4-byte Config Fingerprint** representing the Node's currently active device-executable configuration.
+
+The fingerprint is used as the automatic configuration-change detector:
+- Same fingerprint -> no configuration change is pending for that Node.
+- Different fingerprint -> the Hub indicates that a configuration change is available and the Node then requests the complete configuration update.
+- The customer does not manage fingerprint values manually.
+- `config_revision` remains the monotonic delivery/version guard; the fingerprint is the compact change-detection value.
+
+The Hub does not maintain a Node database. Any fingerprint associated with a pending update exists only as part of that pending-update mailbox entry.
+
+### Wi-Fi-offline telemetry storage
+
+The Hub must not discard Node telemetry simply because customer Wi-Fi or the backend is unavailable.
+
+Flow:
+1. Node sends telemetry.
+2. Hub immediately ACKs the Node.
+3. Hub records the ESP-NOW receive timestamp, RSSI, and telemetry payload.
+4. If Wi-Fi/backend is unavailable, the Hub stores the record in a bounded persistent offline telemetry queue.
+5. When connectivity returns, the Hub uploads queued records asynchronously in original receive-time order, retaining the original Hub timestamp and RSSI.
+6. Successfully accepted records are removed from the offline queue.
+
+This queue is telemetry buffering only; it is not a Node list or Node configuration database.
+
 
 Hub responsibilities:
 - Receive Node telemetry over ESP-NOW
