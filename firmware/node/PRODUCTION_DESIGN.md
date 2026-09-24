@@ -8,6 +8,18 @@ SLEEP -> WAKE -> SENSOR_POWER_ON -> SENSOR_DELAY -> SAMPLE -> BATTERY -> ESP_NOW
 
 The Node never connects to Wi-Fi and never waits for Google Apps Script/backend.
 
+## Configuration fingerprint
+
+The Node maintains an automatic 4-byte **Config Fingerprint** for its active device-executable configuration. The fingerprint is included in every telemetry packet.
+
+The immediate Hub telemetry ACK includes:
+- the relevant Config Fingerprint
+- a `config_changed` flag
+
+If `config_changed = 1`, the Node performs the normal UPDATE_QUERY transaction and accepts the complete configuration update only after validation. The new configuration and fingerprint are saved persistently before the Node uses them on a later cycle.
+
+The fingerprint is automatic and is not customer-managed. `config_revision` remains the monotonic configuration delivery guard.
+
 ## Wake behavior
 
 1. Wake from timer.
