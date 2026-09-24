@@ -9,6 +9,7 @@ static constexpr uint8_t VERSION = 1;
 static constexpr size_t NODE_ID_LEN = 16;
 static constexpr size_t HUB_ID_LEN = 16;
 static constexpr size_t PORT_COUNT = 4;
+static constexpr size_t CONFIG_FINGERPRINT_LEN = 4;
 
 enum MessageType : uint8_t {
   TELEMETRY = 1,
@@ -52,6 +53,7 @@ struct Header {
 struct Telemetry {
   Header h;
   uint32_t config_revision;
+  uint8_t config_fingerprint[CONFIG_FINGERPRINT_LEN];
   uint32_t node_uptime_s;
   uint16_t battery_mv;
   uint8_t present_mask;
@@ -62,16 +64,20 @@ struct Telemetry {
 struct TelemetryAck {
   Header h;
   uint32_t acknowledged_sequence;
+  uint8_t config_fingerprint[CONFIG_FINGERPRINT_LEN];
+  uint8_t config_changed;
 };
 
 struct UpdateQuery {
   Header h;
   uint32_t current_config_revision;
+  uint8_t config_fingerprint[CONFIG_FINGERPRINT_LEN];
 };
 
 struct NoUpdate {
   Header h;
   uint32_t current_config_revision;
+  uint8_t config_fingerprint[CONFIG_FINGERPRINT_LEN];
 };
 
 struct PortConfig {
@@ -84,6 +90,7 @@ struct PortConfig {
 struct ConfigUpdate {
   Header h;
   uint32_t config_revision;
+  uint8_t config_fingerprint[CONFIG_FINGERPRINT_LEN];
   char hub_id[HUB_ID_LEN];
   uint8_t hub_mac[6];
   uint32_t reporting_interval_s;
@@ -94,6 +101,7 @@ struct ConfigUpdate {
 struct ConfigAck {
   Header h;
   uint32_t acknowledged_config_revision;
+  uint8_t config_fingerprint[CONFIG_FINGERPRINT_LEN];
 };
 
 #pragma pack(pop)
