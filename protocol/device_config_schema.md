@@ -12,6 +12,7 @@ All production Nodes use the same firmware image.
 | reporting_interval_s | uint32 | 300 to 43200 seconds |
 | sensor_delay_ms | uint32 | One Node-wide stabilization delay |
 | config_revision | uint32 | Monotonic backend revision |
+| config_fingerprint | uint8[4] | Automatic 4-byte fingerprint of active device-executable configuration |
 | port[0..3] | PortConfig | Physical sensor configuration |
 
 ### PortConfig
@@ -49,13 +50,22 @@ The Hub does not persist a Node list.
 Each mailbox entry contains:
 - node_id
 - config_revision
+- config_fingerprint
 - serialized Node configuration
 - pending/acknowledged state
 - created/updated timestamp
 
+The fingerprint is not customer-managed. It is generated from the normalized device-executable configuration and used to detect whether the Node is already running the same configuration.
+
 Mailbox entries are retained until the Node sends CONFIG_ACK for the matching revision.
 
 The mailbox is communication state, not authoritative configuration. Backend/Node Config remains authoritative.
+
+## Configuration fingerprint behavior
+
+The Node reports its 4-byte Config Fingerprint in every telemetry packet. The Hub includes the relevant fingerprint and a Config Changed flag in the immediate telemetry ACK. When a pending update has a different fingerprint, the Node follows the normal UPDATE_QUERY transaction and receives the complete configuration update.
+
+The fingerprint is a change-detection value, not a customer-visible version number. `config_revision` remains the monotonic configuration delivery guard.
 
 ## Sensor type identifiers
 
